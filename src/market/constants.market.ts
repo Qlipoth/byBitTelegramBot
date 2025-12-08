@@ -139,4 +139,4 @@ export const TOP_LIQUID_COINS = 15;
 // These coins will always be included in the top liquid coins
 export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;
 
-export const COINS_COUNT = 10;
+export const COINS_COUNT = 20;

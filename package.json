@@ -1,16 +1,23 @@
 {
-  "name": "bybit market bot",
+  "name": "bybit-market-bot",
   "version": "1.0.0",
-  "description": "",
+  "description": "A Telegram bot for monitoring ByBit market conditions and detecting trading opportunities",
   "type": "module",
-  "main": "bot.js",
+  "main": "dist/bot.js",
   "scripts": {
-    "start": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
-    "build": "tsc",
-    "dev": "NODE_OPTIONS='--loader ts-node/esm' node src/bot/index.ts"
+    "preview": "node dist/bot.js",
+    "dev": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
+    "build": "node build.js",
+    "build:prod": "NODE_ENV=production node build.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "bybit",
+    "trading",
+    "bot",
+    "telegram",
+    "crypto"
+  ],
+  "author": "Qlipoth",
   "license": "ISC",
   "dependencies": {
     "bybit-api": "^4.4.2",
@@ -20,8 +27,12 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/prettier": "^3.0.0",
+    "esbuild": "0.27.1",
     "prettier": "^3.7.4",
     "ts-node": "^10.9.1",
     "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
