@@ -8,6 +8,7 @@ import {
   LIQUID_COIN_THRESHOLDS,
   SQUEEZE_THRESHOLDS,
   COINS_COUNT,
+  STRUCTURE_WINDOW,
 } from './constants.market.js';
 import { calculateRSI, detectTrend } from './utils.js';
 
@@ -48,16 +49,40 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const snaps = getSnapshots(symbol);
       if (snaps.length < 3) return;
 
+      // =====================
+      // Impulse (last interval)
+      // =====================
+
       const prev = snaps[snaps.length - 2];
-      const baseSnap = snaps[0];
 
       const delta = compareSnapshots(snap, prev!);
-      const deltaBase = compareSnapshots(snap, baseSnap!);
+
+      // =====================
+      // Structure (rolling window)
+      // =====================
+
+      const structureSnaps = snaps.filter(s => Date.now() - s.timestamp <= INTERVALS.FIFTEEN_MIN);
+
+      if (structureSnaps.length < 5) {
+        console.log(
+          `[${symbol}] Not enough data for structure analysis: ${structureSnaps.length} snapshots`
+        );
+        return;
+      }
+
+      console.log(
+        `[${symbol}] Structure analysis: ${structureSnaps.length} snapshots, analyzing last ${Math.round((Date.now() - structureSnaps[0]!.timestamp) / 60000)}m`
+      );
+
+      // Берем самый старый снап в окне
+      const structureBase = structureSnaps[0];
+
+      const deltaStructure = compareSnapshots(snap, structureBase!);
 
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
 
-      const trendLabel = detectTrend({ ...deltaBase, symbol });
+      const trendLabel = detectTrend({ ...deltaStructure, symbol });
 
       const alerts: string[] = [];
 
@@ -105,11 +130,11 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // 4. OI accumulation (structure)
       // =====================
       if (
-        deltaBase.oiChangePct > thresholds.OI_INCREASE_PCT &&
-        Math.abs(deltaBase.priceChangePct) < thresholds.PRICE_DROP_PCT
+        deltaStructure.oiChangePct > thresholds.OI_INCREASE_PCT &&
+        Math.abs(deltaStructure.priceChangePct) < thresholds.PRICE_DROP_PCT
       ) {
         alerts.push(
-          `🧠 OI accumulation | +${deltaBase.oiChangePct.toFixed(1)}% / ${deltaBase.minutesAgo}m`
+          `🧠 OI accumulation | +${deltaStructure.oiChangePct.toFixed(1)}% / ${deltaStructure.minutesAgo}m`
         );
       }
 
@@ -132,7 +157,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // 5. FAILED ACCUMULATION → LONG SQUEEZE START
       // =====================
       if (
-        deltaBase.oiChangePct > thresholds.OI_INCREASE_PCT &&
+        deltaStructure.oiChangePct > thresholds.OI_INCREASE_PCT &&
         delta.priceChangePct < -thresholds.PRICE_DROP_PCT * 1.5 &&
         delta.volumeChangePct > thresholds.VOLUME_SPIKE_PCT &&
         delta.oiChangePct > -1
@@ -185,9 +210,9 @@ ${alerts.join('\n\n')}
 • OI: ${delta.oiChangePct.toFixed(2)}%
 • Volume: ${delta.volumeChangePct.toFixed(2)}%
 
-📈 Structure (${deltaBase.minutesAgo}m):
-• Price: ${deltaBase.priceChangePct.toFixed(2)}%
-• OI: ${deltaBase.oiChangePct.toFixed(2)}%
+📈 Structure (${STRUCTURE_WINDOW}m):
+• Price: ${deltaStructure.priceChangePct.toFixed(2)}%
+• OI: ${deltaStructure.oiChangePct.toFixed(2)}%
         `.trim()
       );
 

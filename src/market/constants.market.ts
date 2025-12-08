@@ -140,3 +140,5 @@ export const TOP_LIQUID_COINS = 15;
 export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;
 
 export const COINS_COUNT = 20;
+
+export const STRUCTURE_WINDOW = 15;
