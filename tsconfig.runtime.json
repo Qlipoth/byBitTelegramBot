@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+
+    "isolatedModules": false,
+    "verbatimModuleSyntax": false,
+    "moduleDetection": "auto",
+    "noUncheckedSideEffectImports": false
+  }
+}
