@@ -205,7 +205,7 @@ Trend: ${trendLabel}
 
 ${alerts.join('\n\n')}
 
-📊 Impulse (5m):
+📊 Impulse ${INTERVAL}:
 • Price: ${delta.priceChangePct.toFixed(2)}%
 • OI: ${delta.oiChangePct.toFixed(2)}%
 • Volume: ${delta.volumeChangePct.toFixed(2)}%
