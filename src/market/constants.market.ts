@@ -119,6 +119,7 @@ export const SQUEEZE_THRESHOLDS = {
     VOLUME_CHANGE: 100,
     OI_CHANGE: -1.5,
     RSI_OVERBOUGHT: 65,
+    FR_POSITIVE: 0.02,
   },
   // Squeeze score weights
   SCORE_WEIGHTS: {
@@ -138,6 +139,16 @@ export const TOP_LIQUID_COINS = 15;
 
 // These coins will always be included in the top liquid coins
 export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;
+
+// Funding rate thresholds
+export const FUNDING_RATE_THRESHOLDS = {
+  // For long squeeze confirmation
+  LONG_SQUEEZE: 0.02, // 0.02% per 8h
+  // For failed accumulation
+  FAILED_ACCUMULATION: 0.01, // 0.01% per 8h
+  // For extreme funding rate alert
+  EXTREME: 0.03, // 0.03% per 8h
+} as const;
 
 export const COINS_COUNT = 20;
 

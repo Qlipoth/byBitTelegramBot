@@ -9,8 +9,9 @@ import {
   SQUEEZE_THRESHOLDS,
   COINS_COUNT,
   STRUCTURE_WINDOW,
+  FUNDING_RATE_THRESHOLDS,
 } from './constants.market.js';
-import { calculateRSI, detectTrend } from './utils.js';
+import { calculateRSI, detectTrend, formatFundingRate } from './utils.js';
 
 const lastAlertAt: Record<string, number> = {};
 const ALERT_COOLDOWN = 10 * 60 * 1000;
@@ -160,7 +161,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         deltaStructure.oiChangePct > thresholds.OI_INCREASE_PCT &&
         delta.priceChangePct < -thresholds.PRICE_DROP_PCT * 1.5 &&
         delta.volumeChangePct > thresholds.VOLUME_SPIKE_PCT &&
-        delta.oiChangePct > -1
+        delta.oiChangePct > -1 &&
+        snap.fundingRate > FUNDING_RATE_THRESHOLDS.FAILED_ACCUMULATION
       ) {
         alerts.push(
           `💥 Accumulation FAILED → LONG SQUEEZE START\n` +
@@ -179,15 +181,24 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta.priceChangePct < LONG.PRICE_CHANGE &&
         delta.volumeChangePct > LONG.VOLUME_CHANGE &&
         delta.oiChangePct < LONG.OI_CHANGE &&
-        rsi > LONG.RSI_OVERBOUGHT
+        rsi > LONG.RSI_OVERBOUGHT &&
+        snap.fundingRate > FUNDING_RATE_THRESHOLDS.LONG_SQUEEZE
       ) {
         alerts.push(
           `🔴 LONG SQUEEZE CONFIRMED\n` +
             `• Price ↓${Math.abs(delta.priceChangePct).toFixed(2)}%\n` +
             `• Volume ↑${delta.volumeChangePct.toFixed(0)}%\n` +
             `• OI ↓${Math.abs(delta.oiChangePct).toFixed(1)}%\n` +
-            `• RSI ${rsi.toFixed(1)}`
+            `• RSI ${rsi.toFixed(1)}
+            • Funding: ${formatFundingRate(snap.fundingRate)}`
         );
+      }
+
+      // =====================
+      // 7. FUNDING RATE
+      // =====================
+      if (Math.abs(snap.fundingRate) > FUNDING_RATE_THRESHOLDS.EXTREME) {
+        alerts.push(`💰 Extreme Funding: ${formatFundingRate(snap.fundingRate)}`);
       }
 
       // =====================
@@ -209,13 +220,14 @@ ${alerts.join('\n\n')}
 • Price: ${delta.priceChangePct.toFixed(2)}%
 • OI: ${delta.oiChangePct.toFixed(2)}%
 • Volume: ${delta.volumeChangePct.toFixed(2)}%
+• Funding: ${formatFundingRate(snap.fundingRate)}
 
 📈 Structure (${STRUCTURE_WINDOW}m):
 • Price: ${deltaStructure.priceChangePct.toFixed(2)}%
 • OI: ${deltaStructure.oiChangePct.toFixed(2)}%
+• Funding: ${formatFundingRate(snap.fundingRate)}
         `.trim()
       );
-
       lastAlertAt[symbol] = now;
     } catch (err) {
       console.error(`❌ Market watcher error (${symbol}):`, err);

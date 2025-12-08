@@ -14,7 +14,11 @@ export async function getMarketSnapshot(symbol: string): Promise<MarketSnapshot>
     const [ticker, oi, funding] = await Promise.all([
       bybitClient.getTickers({ category: 'linear', symbol }),
       bybitClient.getOpenInterest({ category: 'linear', symbol, intervalTime: '5min' }),
-      bybitClient.getFundingRateHistory({ category: 'linear', symbol }),
+      bybitClient.getFundingRateHistory({
+        category: 'linear',
+        symbol,
+        limit: 1, // Get only the most recent funding rate
+      }),
     ]);
 
     // Validate responses

@@ -73,3 +73,13 @@ export function calculatePriceChanges(prices: number[]): number[] {
 
   return prices.slice(1).map((price, i) => ((price - prices[i]!) / prices[i]!) * 100);
 }
+
+/**
+ * Formats funding rate into a human-readable string
+ * @param rate - Funding rate (e.g., 0.0001 for 0.01%)
+ * @returns Formatted string with percentage and who pays (e.g., "0.0250% (Longs pay)")
+ */
+export function formatFundingRate(rate: number | undefined): string {
+  const safeRate = rate ?? 0;
+  return `${(Math.abs(safeRate) * 100).toFixed(4)}% (${safeRate > 0 ? 'Longs' : 'Shorts'} pay)`;
+}
