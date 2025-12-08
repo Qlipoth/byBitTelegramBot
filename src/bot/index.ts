@@ -53,7 +53,7 @@ const bot = new Bot(process.env.BOT_TOKEN!);
 
 const welcomeMsg =
   `🚀 *Market Bot Started*\n\n` +
-  `📊 Tracking top 30 liquid coins\n` +
+  `📊 Tracking top ${COINS_COUNT} liquid coins\n` +
   `🔄 Updates every minute\n` +
   `🔔 Alerts for significant market movements`;
 
