@@ -80,6 +80,59 @@ export const LIQUID_COIN_THRESHOLDS = {
 // Default to base thresholds
 export let ALERT_THRESHOLDS = { ...BASE_ALERT_THRESHOLDS };
 
+// =====================
+// IMPULSE (1m) thresholds
+// =====================
+export const BASE_IMPULSE_THRESHOLDS = {
+  VOLUME_SPIKE_PCT: 6,
+  VOLUME_HIGH_PCT: 10,
+
+  PRICE_STABLE_PCT: 0.25,
+  PRICE_DROP_PCT: 0.5,
+  PRICE_SURGE_PCT: 0.6,
+
+  OI_INCREASE_PCT: 0.6,
+  OI_SURGE_PCT: 1.2,
+} as const;
+
+export const LIQUID_IMPULSE_THRESHOLDS = {
+  VOLUME_SPIKE_PCT: 4,
+  VOLUME_HIGH_PCT: 8,
+
+  PRICE_STABLE_PCT: 0.18,
+  PRICE_DROP_PCT: 0.4,
+  PRICE_SURGE_PCT: 0.5,
+
+  OI_INCREASE_PCT: 0.4,
+  OI_SURGE_PCT: 1.0,
+} as const;
+
+// =====================
+// STRUCTURE (15m) thresholds
+// =====================
+export const BASE_STRUCTURE_THRESHOLDS = {
+  VOLUME_SPIKE_PCT: 15,
+  VOLUME_HIGH_PCT: 25,
+
+  PRICE_STABLE_PCT: 0.7,
+  PRICE_DROP_PCT: 1.2,
+  PRICE_SURGE_PCT: 1.4,
+
+  OI_INCREASE_PCT: 2.5,
+  OI_SURGE_PCT: 4.5,
+} as const;
+
+export const LIQUID_STRUCTURE_THRESHOLDS = {
+  VOLUME_SPIKE_PCT: 10,
+  VOLUME_HIGH_PCT: 18,
+
+  PRICE_STABLE_PCT: 0.45,
+  PRICE_DROP_PCT: 0.9,
+  PRICE_SURGE_PCT: 1.1,
+
+  OI_INCREASE_PCT: 1.8,
+  OI_SURGE_PCT: 3.5,
+} as const;
 // Trend thresholds for normal coins
 export const BASE_TREND_THRESHOLDS = {
   PRICE_CHANGE: 2, // 2% price change for significant move
@@ -134,12 +187,6 @@ export const SQUEEZE_THRESHOLDS = {
   },
 } as const;
 
-// Number of top liquid coins to track
-export const TOP_LIQUID_COINS = 15;
-
-// These coins will always be included in the top liquid coins
-export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;
-
 // Funding rate thresholds
 export const FUNDING_RATE_THRESHOLDS = {
   // For long squeeze confirmation
@@ -153,3 +200,6 @@ export const FUNDING_RATE_THRESHOLDS = {
 export const COINS_COUNT = 20;
 
 export const STRUCTURE_WINDOW = 15;
+
+// These coins will always be included in the top liquid coins
+export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;

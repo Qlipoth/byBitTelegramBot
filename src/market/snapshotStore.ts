@@ -2,7 +2,7 @@ import type { MarketSnapshot } from './types.js';
 import { INTERVALS } from './constants.market.js'; // .js extension required for NodeNext module resolution
 
 const store: Record<string, MarketSnapshot[]> = {};
-const MAX_SNAPSHOTS = 12; // например: 12 × 5 мин = 1 час
+const MAX_SNAPSHOTS = 60; // например: 12 × 5 мин = 1 час
 
 export function saveSnapshot(snapshot: MarketSnapshot) {
   if (!store[snapshot.symbol]) {
