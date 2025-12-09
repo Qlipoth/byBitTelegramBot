@@ -17,7 +17,7 @@ export async function getMarketSnapshot(symbol: string): Promise<MarketSnapshot>
       bybitClient.getFundingRateHistory({
         category: 'linear',
         symbol,
-        limit: 1, // Get only the most recent funding rate
+        limit: 1,
       }),
     ]);
 
