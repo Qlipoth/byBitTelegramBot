@@ -5,7 +5,6 @@ import {
   INTERVALS,
   PRIORITY_COINS,
   COINS_COUNT,
-  STRUCTURE_WINDOW,
   FUNDING_RATE_THRESHOLDS,
   SQUEEZE_THRESHOLDS,
   BASE_IMPULSE_THRESHOLDS,
@@ -13,7 +12,7 @@ import {
   BASE_STRUCTURE_THRESHOLDS,
   LIQUID_STRUCTURE_THRESHOLDS,
 } from './constants.market.js';
-import { calculateRSI, detectTrend, formatFundingRate } from './utils.js';
+import { calculateRSI, detectTrend, formatFundingRate, getSnapshotsInWindow } from './utils.js';
 
 const lastAlertAt: Record<string, number> = {};
 const ALERT_COOLDOWN = 10 * 60 * 1000;
@@ -42,7 +41,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
 
   const impulse = isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS;
-
   const structure = isPriorityCoin ? LIQUID_STRUCTURE_THRESHOLDS : BASE_STRUCTURE_THRESHOLDS;
 
   console.log(`🚀 Market watcher started for ${symbol}`);
@@ -62,23 +60,24 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const delta = compareSnapshots(snap, prev!);
 
       // =====================
-      // Structure (rolling 15m)
+      // Structure Analysis (15m, 30m)
       // =====================
-      const structureSnaps = snaps.filter(
-        s => Date.now() - s.timestamp <= STRUCTURE_WINDOW * 60_000
-      );
+      const structure15mSnaps = getSnapshotsInWindow(snaps, 15);
+      const structure30mSnaps = getSnapshotsInWindow(snaps, 30);
 
-      if (structureSnaps.length < 5) return;
+      if (structure15mSnaps.length < 5 || structure30mSnaps.length < 5) return;
 
-      const structureBase = structureSnaps[0];
-      const deltaStructure = compareSnapshots(snap, structureBase!);
+      const delta15m = compareSnapshots(snap, structure15mSnaps[0]!);
+      const delta30m = compareSnapshots(snap, structure30mSnaps[0]!);
 
       // =====================
       // Indicators
       // =====================
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
-      const trendLabel = detectTrend({ ...deltaStructure, symbol });
+
+      // For trend detection, you can choose either 30m delta or combined logic
+      const trendLabel = detectTrend({ ...delta30m, symbol });
 
       const alerts: string[] = [];
 
@@ -90,9 +89,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         Math.abs(delta.priceChangePct) < impulse.PRICE_STABLE_PCT
       ) {
         alerts.push(
-          `🧲 Absorption | vol +${delta.volumeChangePct.toFixed(
-            1
-          )}%, price ${delta.priceChangePct.toFixed(2)}%`
+          `🧲 Absorption | vol +${delta.volumeChangePct.toFixed(1)}%, price ${delta.priceChangePct.toFixed(2)}%`
         );
       }
 
@@ -105,9 +102,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta.oiChangePct > 0
       ) {
         alerts.push(
-          `📉 Aggressive sell | OI +${delta.oiChangePct.toFixed(
-            1
-          )}%, vol +${delta.volumeChangePct.toFixed(1)}%`
+          `📉 Aggressive sell | OI +${delta.oiChangePct.toFixed(1)}%, vol +${delta.volumeChangePct.toFixed(1)}%`
         );
       }
 
@@ -120,9 +115,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta.oiChangePct > impulse.OI_INCREASE_PCT
       ) {
         alerts.push(
-          `🚀 Momentum ${delta.priceChangePct > 0 ? 'UP' : 'DOWN'} | price ${delta.priceChangePct.toFixed(
-            2
-          )}%, OI +${delta.oiChangePct.toFixed(1)}%`
+          `🚀 Momentum ${delta.priceChangePct > 0 ? 'UP' : 'DOWN'} | price ${delta.priceChangePct.toFixed(2)}%, OI +${delta.oiChangePct.toFixed(1)}%`
         );
       }
 
@@ -130,14 +123,28 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // 4. OI accumulation (structure)
       // =====================
       if (
-        deltaStructure.oiChangePct > structure.OI_INCREASE_PCT &&
-        Math.abs(deltaStructure.priceChangePct) < structure.PRICE_DROP_PCT
+        delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
+        Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
       ) {
-        alerts.push(
-          `🧠 OI accumulation | +${deltaStructure.oiChangePct.toFixed(
-            1
-          )}% / ${deltaStructure.minutesAgo}m`
-        );
+        alerts.push(`🧠 OI accumulation | +${delta30m.oiChangePct.toFixed(1)}% / 30m`);
+      }
+
+      if (
+        delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
+        Math.abs(delta15m.priceChangePct) < structure.PRICE_DROP_PCT
+      ) {
+        alerts.push(`🧠 OI accumulation | +${delta15m.oiChangePct.toFixed(1)}% / 15m`);
+      }
+
+      // =====================
+      // 4. OI accumulation (structure)
+      // =====================
+      if (
+        delta15m.oiChangePct > structure.OI_INCREASE_PCT && // короткий таймфрейм
+        delta30m.oiChangePct > structure.OI_INCREASE_PCT && // длинный таймфрейм
+        Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
+      ) {
+        alerts.push(`🧠 OI accumulation | +${delta30m.oiChangePct.toFixed(1)}% / 30m`);
       }
 
       // =====================
@@ -145,13 +152,12 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // =====================
       if (
         delta.oiChangePct > 0 &&
+        delta15m.oiChangePct > 0 && // Confirm OI increase on 15m
         delta.priceChangePct < -impulse.PRICE_DROP_PCT &&
         delta.volumeChangePct > impulse.VOLUME_HIGH_PCT
       ) {
         alerts.push(
-          `⚠️ Long trap forming | OI ↑${delta.oiChangePct.toFixed(
-            1
-          )}%, price ↓${Math.abs(delta.priceChangePct).toFixed(2)}%`
+          `⚠️ Long trap forming | OI ↑${delta.oiChangePct.toFixed(1)}%, price ↓${Math.abs(delta.priceChangePct).toFixed(2)}%`
         );
       }
 
@@ -159,7 +165,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // 5. Failed accumulation → long squeeze start
       // =====================
       if (
-        deltaStructure.oiChangePct > structure.OI_INCREASE_PCT &&
+        delta15m.oiChangePct > structure.OI_INCREASE_PCT && // короткий таймфрейм
+        delta30m.oiChangePct > structure.OI_INCREASE_PCT && // длинный таймфрейм
         delta.priceChangePct < -impulse.PRICE_DROP_PCT * 1.5 &&
         delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
         delta.oiChangePct > -1 &&
@@ -177,7 +184,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // 6. Long squeeze confirmation
       // =====================
       const { LONG } = SQUEEZE_THRESHOLDS;
-
       if (
         delta.priceChangePct < LONG.PRICE_CHANGE &&
         delta.volumeChangePct > LONG.VOLUME_CHANGE &&
@@ -210,6 +216,15 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const now = Date.now();
       if (now - (lastAlertAt[symbol] || 0) < ALERT_COOLDOWN) return;
 
+      // 1m vs 30m momentum
+      const structure1mSnaps = getSnapshotsInWindow(snaps, 1);
+      if (structure1mSnaps.length < 2 || structure30mSnaps.length < 5) return;
+      const delta1m = compareSnapshots(snap, structure1mSnaps[0]);
+
+      const priceMomentum = delta1m.priceChangePct - delta30m.priceChangePct;
+      const volumeRatio = delta1m.volumeChangePct / Math.max(0.01, delta30m.volumeChangePct);
+      const oiMomentum = delta1m.oiChangePct - delta30m.oiChangePct;
+
       onAlert(
         `
 ⚠️ *${symbol}*
@@ -223,9 +238,19 @@ ${alerts.join('\n\n')}
 • Volume: ${delta.volumeChangePct.toFixed(2)}%
 • Funding: ${formatFundingRate(snap.fundingRate)}
 
-📈 Structure (${STRUCTURE_WINDOW}m):
-• Price: ${deltaStructure.priceChangePct.toFixed(2)}%
-• OI: ${deltaStructure.oiChangePct.toFixed(2)}%
+🔄 1m vs 30m Momentum:
+• Price: ${priceMomentum > 0 ? '↑' : '↓'} ${Math.abs(priceMomentum).toFixed(2)}%
+• Volume: ${volumeRatio > 1 ? '↑' : '↓'} ${volumeRatio.toFixed(2)}x
+• OI: ${oiMomentum > 0 ? '↑' : '↓'} ${Math.abs(oiMomentum).toFixed(2)}%
+
+📈 Structure:
+• 15m Price Δ: ${delta15m.priceChangePct.toFixed(2)}%
+• 15m OI Δ: ${delta15m.oiChangePct.toFixed(2)}%
+• 15m Volume Δ: ${delta15m.volumeChangePct.toFixed(2)}%
+
+• 30m Price Δ: ${delta30m.priceChangePct.toFixed(2)}%
+• 30m OI Δ: ${delta30m.oiChangePct.toFixed(2)}%
+• 30m Volume Δ: ${delta30m.volumeChangePct.toFixed(2)}%
         `.trim()
       );
 

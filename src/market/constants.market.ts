@@ -42,6 +42,7 @@ export const INTERVALS = {
   ONE_MIN: 60 * 1000,
   FIVE_MIN: 5 * 60 * 1000,
   FIFTEEN_MIN: 15 * 60 * 1000,
+  THIRTY_MIN: 30 * 60 * 1000,
   ONE_HOUR: 60 * 60 * 1000,
 } as const;
 

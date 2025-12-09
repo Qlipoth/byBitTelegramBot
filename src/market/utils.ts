@@ -83,3 +83,7 @@ export function formatFundingRate(rate: number | undefined): string {
   const safeRate = rate ?? 0;
   return `${(Math.abs(safeRate) * 100).toFixed(4)}% (${safeRate > 0 ? 'Longs' : 'Shorts'} pay)`;
 }
+
+export function getSnapshotsInWindow(snaps: any[], minutes: number) {
+  return snaps.filter(s => Date.now() - s.timestamp <= minutes * 60_000);
+}
