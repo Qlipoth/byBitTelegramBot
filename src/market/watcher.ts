@@ -123,23 +123,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // 4. OI accumulation (structure)
       // =====================
       if (
-        delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
-        Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
-      ) {
-        alerts.push(`🧠 OI accumulation | +${delta30m.oiChangePct.toFixed(1)}% / 30m`);
-      }
-
-      if (
-        delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
-        Math.abs(delta15m.priceChangePct) < structure.PRICE_DROP_PCT
-      ) {
-        alerts.push(`🧠 OI accumulation | +${delta15m.oiChangePct.toFixed(1)}% / 15m`);
-      }
-
-      // =====================
-      // 4. OI accumulation (structure)
-      // =====================
-      if (
         delta15m.oiChangePct > structure.OI_INCREASE_PCT && // короткий таймфрейм
         delta30m.oiChangePct > structure.OI_INCREASE_PCT && // длинный таймфрейм
         Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
