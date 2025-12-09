@@ -72,8 +72,6 @@ export function formatMarketSnapshot(snapshot: MarketSnapshot): string {
   ].join('\n');
 }
 
-// src/services/bybit.ts
-
 // Add this new function to get top liquid symbols
 
 export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]> {
