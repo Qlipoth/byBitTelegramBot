@@ -1,55 +1,136 @@
+/* ===============================
+   GLOBAL GUARDS & SHUTDOWN
+   =============================== */
+
+let isShuttingDown = false;
+let stopWatchers: (() => void) | null = null;
+
+// Track active subscribers and their last activity time
+const subscribers = new Set<number>();
+const activeTimestamps = new Map<number, number>();
+
+// Clean up inactive subscribers every hour
+const cleanupInterval = setInterval(
+  () => {
+    const now = Date.now();
+    const dayInMs = 24 * 60 * 60 * 1000;
+
+    for (const chatId of subscribers) {
+      const lastActive = activeTimestamps.get(chatId) || 0;
+      if (now - lastActive > dayInMs) {
+        console.log(`👋 Removing inactive chat: ${chatId}`);
+        subscribers.delete(chatId);
+        activeTimestamps.delete(chatId);
+      }
+    }
+  },
+  60 * 60 * 1000
+); // Every hour
+
+const g = global as any;
+if (g.__BOT_STARTED__) {
+  console.log('Bot already started, skipping');
+  process.exit(0);
+}
+g.__BOT_STARTED__ = true;
+
+async function shutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  console.log(`🛑 Shutdown (${signal})`);
+
+  // Cleanup resources
+  clearInterval(cleanupInterval);
+  stopWatchers?.();
+  stopWatchers = null;
+  subscribers.clear();
+  activeTimestamps.clear();
+
+  try {
+    await bot.stop();
+  } catch (error) {
+    console.error('Error during bot shutdown:', error);
+  }
+
+  setTimeout(() => {
+    console.log('✅ Exit');
+    process.exit(0);
+  }, 500);
+}
+
+process.on('SIGINT', () => {
+  shutdown('SIGINT').catch(console.error);
+});
+process.on('SIGTERM', () => {
+  shutdown('SIGTERM').catch(console.error);
+});
+
 process.on('uncaughtException', err => {
   console.error('UNCAUGHT EXCEPTION:', err);
-  console.error('constructor:', err?.constructor?.name);
-  console.error('keys:', Object.keys(err || {}));
 });
 
 process.on('unhandledRejection', reason => {
   console.error('UNHANDLED REJECTION:', reason);
 });
 
+/* ===============================
+   IMPORTS & ENV
+   =============================== */
+
 import { Bot } from 'grammy';
 import * as dotenv from 'dotenv';
+
 import { getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
 import { getSnapshots } from '../market/snapshotStore.js';
 import { compareSnapshots, formatCompareSnapshots } from '../market/compare.js';
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT } from '../market/constants.market.js';
 
-// Load environment variables from .env file
 dotenv.config();
 
-// Check if required environment variables exist
 const requiredEnvVars = ['BOT_TOKEN', 'BYBIT_API_KEY', 'BYBIT_SECRET_KEY'];
-const missingVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+const missingVars = requiredEnvVars.filter(v => !process.env[v]);
 
-if (missingVars.length > 0) {
-  console.error(`Error: Missing required environment variables: ${missingVars.join(', ')}`);
+if (missingVars.length) {
+  console.error('Missing env vars:', missingVars.join(', '));
   process.exit(1);
 }
 
-// ===========================================
-// ГЛОБАЛЬНЫЕ ОБРАБОТЧИКИ ОШИБОК (DIAGNOSTICS)
-// ===========================================
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('*** UNHANDLED REJECTION ***');
-  console.error('Promise:', promise);
-  console.error('Reason (The Uncaught Object):', reason);
-  // Выведите объект ошибки полностью, чтобы увидеть его содержимое
-  console.dir(reason, { depth: null });
-  // Вы можете закомментировать строку ниже, чтобы предотвратить завершение работы
-  // process.exit(1);
-});
+/* ===============================
+   BOT INIT
+   =============================== */
 
-process.on('uncaughtException', (err, origin) => {
-  console.error('*** UNCAUGHT EXCEPTION ***');
-  console.error('Error:', err);
-  console.error('Origin:', origin);
-  // process.exit(1);
-});
-
-// Initialize the bot
 const bot = new Bot(process.env.BOT_TOKEN!);
+
+/* ===============================
+   SUBSCRIPTIONS
+   =============================== */
+
+async function startWatchersOnce() {
+  if (stopWatchers) {
+    console.log('✅ Watchers already running');
+    return;
+  }
+
+  stopWatchers = await initializeMarketWatcher(async msg => {
+    for (const chatId of subscribers) {
+      try {
+        await bot.api.sendMessage(chatId, msg, {
+          parse_mode: 'Markdown',
+        });
+      } catch (e) {
+        console.error('Send failed:', chatId, e);
+      }
+    }
+  });
+
+  console.log('🚀 Market watchers started');
+}
+
+/* ===============================
+   COMMANDS
+   =============================== */
 
 const welcomeMsg =
   `🚀 *Market Bot Started*\n\n` +
@@ -58,35 +139,32 @@ const welcomeMsg =
   `🔔 Alerts for significant market movements`;
 
 bot.command('start', async ctx => {
-  try {
-    // Initialize watchers for all symbols
-    const stopWatchers = await initializeMarketWatcher(msg =>
-      ctx.reply(msg, { parse_mode: 'Markdown' })
-    );
+  subscribers.add(ctx.chat.id);
+  console.log(`➕ Subscribed chat ${ctx.chat.id}`);
+  await ctx.reply(welcomeMsg, { parse_mode: 'Markdown' });
+});
 
-    // Handle bot stop
-    process.on('SIGINT', () => {
-      stopWatchers();
-      process.exit(0);
-    });
+bot.command('stop', async ctx => {
+  subscribers.delete(ctx.chat.id);
+  console.log(`➖ Unsubscribed chat ${ctx.chat.id}`);
 
-    // Send welcome message with tracked symbols
+  await ctx.reply('🛑 Notifications stopped');
+});
 
-    return ctx.reply(welcomeMsg, { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error('Start command error:', error);
-    return ctx.reply('❌ Failed to start market watchers. Please try again.');
-  }
+bot.command('status', ctx => {
+  const status =
+    `👥 Subscribers: ${subscribers.size}\n` +
+    `📊 Watching ${COINS_COUNT} coins\n` +
+    `🔄 Updates every minute`;
+  ctx.reply(status).then();
 });
 
 bot.command('market', async ctx => {
-  // Send initial loading message
-  const loadingMsg = await ctx.reply('🔄 Loading market data...', {
-    parse_mode: 'Markdown',
-  });
+  const loadingMsg = await ctx.reply('🔄 Loading market data...');
 
   try {
     const symbols = await getTopLiquidSymbols(COINS_COUNT);
+
     const marketData = await Promise.all(
       symbols.map(async symbol => {
         const snap = await getMarketSnapshot(symbol);
@@ -100,90 +178,92 @@ bot.command('market', async ctx => {
       })
     );
 
-    // Sort by volume (descending)
     marketData.sort((a, b) => b.volume - a.volume);
 
-    // Format the message with better alignment
     const message =
       `📊 *Market Overview*\n\n` +
       marketData
         .map(coin => {
-          // Format numbers
           const price = Number(coin.price).toFixed(coin.price < 1 ? 6 : 2);
           const oi = (coin.oi / 1_000_000).toFixed(1);
           const volume = (coin.volume / 1_000_000).toFixed(1);
           const funding = (coin.funding * 100).toFixed(4);
 
-          // Add color to funding rate
-          let fundingStr;
-          if (coin.funding > 0.0005) fundingStr = `🟢 ${funding}%`;
-          else if (coin.funding < -0.0005) fundingStr = `🔴 ${funding}%`;
-          else fundingStr = `⚪ ${funding}%`;
+          let fundingStr =
+            coin.funding > 0.0005
+              ? `🟢 ${funding}%`
+              : coin.funding < -0.0005
+                ? `🔴 ${funding}%`
+                : `⚪ ${funding}%`;
 
           return `*${coin.symbol}*
-  Price: $${price}
-  OI: ${oi}M  |  Vol: ${volume}M
-  FR: ${fundingStr}`;
+Price: $${price}
+OI: ${oi}M | Vol: ${volume}M
+FR: ${fundingStr}`;
         })
         .join('\n\n');
 
-    // Update the loading message with the actual data
-    await ctx.api.editMessageText(ctx.chat!.id, loadingMsg.message_id, message, {
+    await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, message, {
       parse_mode: 'Markdown',
     });
-  } catch (error) {
-    console.error('Error in /market command:', error);
+  } catch (e) {
+    console.error(e);
     await ctx.api.editMessageText(
-      ctx.chat!.id,
+      ctx.chat.id,
       loadingMsg.message_id,
-      '❌ Error fetching market data. Please try again later.'
+      '❌ Error fetching market data'
     );
   }
 });
 
 bot.command('delta', async ctx => {
   try {
-    const [symbolArg] = ctx.message?.text?.split(' ') || [];
+    const [, symbolArg] = ctx.message?.text?.split(' ') || [];
     const symbol = symbolArg?.toUpperCase() || (await getTopLiquidSymbols(1))[0];
 
     const loadingMsg = await ctx.reply(`⏳ Analyzing ${symbol}...`);
     const snaps = getSnapshots(symbol!);
 
     if (snaps.length < 2) {
-      return ctx.reply(`Not enough data for ${symbol}. Try again in a minute.`);
+      return ctx.reply(`Not enough data for ${symbol}`);
     }
 
-    const now = snaps[snaps.length - 1];
-    const prev = snaps[0]; // Oldest snapshot
+    const delta = compareSnapshots(snaps.at(-1)!, snaps[0]!);
+    const formatted = formatCompareSnapshots(delta, symbol!);
 
-    const delta = compareSnapshots(now!, prev!);
-    const formattedDelta = formatCompareSnapshots(delta, symbol!);
-
-    await ctx.api.editMessageText(ctx.chat!.id, loadingMsg.message_id, formattedDelta, {
+    await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, formatted, {
       parse_mode: 'Markdown',
     });
-  } catch (error) {
-    console.error('Delta command error:', error);
-    await ctx.reply('❌ Error analyzing market data. Please try again.');
+  } catch (e) {
+    console.error(e);
+    await ctx.reply('❌ Error');
   }
 });
 
-// Handle other text messages
+/* ===============================
+   FALLBACK & START
+   =============================== */
+
+// Update timestamp on any message
+bot.use(async (ctx, next) => {
+  if (ctx.chat) {
+    activeTimestamps.set(ctx.chat.id, Date.now());
+  }
+  await next();
+});
+
 bot.on('message:text', async ctx => {
-  await ctx.reply(`🤖 I'm a market analysis bot! Use /market [symbol] to get market data.`);
+  await ctx.reply('🤖 Use /market or /delta');
 });
 
-// Error handling
-bot.catch(error => {
-  console.error('Bot error:', error);
-});
+bot.catch(err => console.error('Bot error:', err));
 
-// Start the bot
 console.log('🚀 Starting bot...');
 bot
   .start({
-    onStart: botInfo => {
-      console.log(`🤖 Bot @${botInfo.username} is running!`);
+    onStart: async info => {
+      console.log(`🤖 Bot @${info.username} is running!`);
+      await startWatchersOnce();
     },
   })
   .then();
