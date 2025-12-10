@@ -5,27 +5,8 @@
 let isShuttingDown = false;
 let stopWatchers: (() => void) | null = null;
 
-// Track active subscribers and their last activity time
 const subscribers = new Set<number>();
 const activeTimestamps = new Map<number, number>();
-
-// Clean up inactive subscribers every hour
-// const cleanupInterval = setInterval(
-//   () => {
-//     const now = Date.now();
-//     const dayInMs = 24 * 60 * 60 * 1000;
-//
-//     for (const chatId of subscribers) {
-//       const lastActive = activeTimestamps.get(chatId) || 0;
-//       if (now - lastActive > dayInMs) {
-//         console.log(`👋 Removing inactive chat: ${chatId}`);
-//         subscribers.delete(chatId);
-//         activeTimestamps.delete(chatId);
-//       }
-//     }
-//   },
-//   60 * 60 * 1000
-//);
 
 const g = global as any;
 if (g.__BOT_STARTED__) {
@@ -71,12 +52,10 @@ process.on('unhandledRejection', reason => {
    IMPORTS & ENV
    =============================== */
 
-import { Bot } from 'grammy';
+import { Bot, Keyboard } from 'grammy';
 import * as dotenv from 'dotenv';
 
 import { getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
-import { getSnapshots } from '../market/snapshotStore.js';
-import { compareSnapshots, formatCompareSnapshots } from '../market/compare.js';
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT } from '../market/constants.market.js';
 
@@ -97,7 +76,19 @@ if (missingVars.length) {
 const bot = new Bot(process.env.BOT_TOKEN!);
 
 /* ===============================
-   SUBSCRIPTIONS
+   KEYBOARD
+   =============================== */
+
+const mainKeyboard = new Keyboard()
+  .text('/start')
+  .text('/market')
+  .row()
+  .text('/status')
+  .text('/stop')
+  .resized();
+
+/* ===============================
+   WATCHERS
    =============================== */
 
 async function startWatchersOnce() {
@@ -129,19 +120,24 @@ const welcomeMsg =
   `🚀 *Market Bot Started*\n\n` +
   `📊 Tracking top ${COINS_COUNT} liquid coins\n` +
   `🔄 Updates every minute\n` +
-  `🔔 Alerts for significant market movements`;
+  `🔔 Signals for market structure`;
 
 bot.command('start', async ctx => {
   subscribers.add(ctx.chat.id);
   console.log(`➕ Subscribed chat ${ctx.chat.id}`);
-  await ctx.reply(welcomeMsg, { parse_mode: 'Markdown' });
+  await ctx.reply(welcomeMsg, {
+    parse_mode: 'Markdown',
+    reply_markup: mainKeyboard,
+  });
 });
 
 bot.command('stop', async ctx => {
   subscribers.delete(ctx.chat.id);
   console.log(`➖ Unsubscribed chat ${ctx.chat.id}`);
 
-  await ctx.reply('🛑 Notifications stopped');
+  await ctx.reply('🛑 Notifications stopped', {
+    reply_markup: mainKeyboard,
+  });
 });
 
 bot.command('status', ctx => {
@@ -209,30 +205,6 @@ FR: ${fundingStr}`;
   }
 });
 
-bot.command('delta', async ctx => {
-  try {
-    const [, symbolArg] = ctx.message?.text?.split(' ') || [];
-    const symbol = symbolArg?.toUpperCase() || (await getTopLiquidSymbols(1))[0];
-
-    const loadingMsg = await ctx.reply(`⏳ Analyzing ${symbol}...`);
-    const snaps = getSnapshots(symbol!);
-
-    if (snaps.length < 2) {
-      return ctx.reply(`Not enough data for ${symbol}`);
-    }
-
-    const delta = compareSnapshots(snaps.at(-1)!, snaps[0]!);
-    const formatted = formatCompareSnapshots(delta, symbol!);
-
-    await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, formatted, {
-      parse_mode: 'Markdown',
-    });
-  } catch (e) {
-    console.error(e);
-    await ctx.reply('❌ Error');
-  }
-});
-
 /* ===============================
    FALLBACK & START
    =============================== */
@@ -246,7 +218,7 @@ bot.use(async (ctx, next) => {
 });
 
 bot.on('message:text', async ctx => {
-  await ctx.reply('🤖 Use /market or /delta');
+  await ctx.reply('👇 Use buttons below', { reply_markup: mainKeyboard });
 });
 
 bot.catch(err => console.error('Bot error:', err));
