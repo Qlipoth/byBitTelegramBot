@@ -14,3 +14,15 @@ export interface MarketDelta {
   volumeChangePct: number;
   minutesAgo: number;
 }
+
+export interface MarketState {
+  phase: 'range' | 'accumulation' | 'trend';
+  lastAlertAt: number;
+  lastConfirmationAt?: number; // ✅ вход подтверждён
+  flags: {
+    accumulation?: number;
+    failedAccumulation?: number;
+    squeezeStarted?: number;
+    entryCandidate?: 'LONG' | 'SHORT' | undefined;
+  };
+}

@@ -13,19 +13,11 @@ import {
   LIQUID_STRUCTURE_THRESHOLDS,
 } from './constants.market.js';
 import { calculateRSI, detectTrend, formatFundingRate, getSnapshotsInWindow } from './utils.js';
+import type { MarketState } from './types.js';
 
 const ALERT_COOLDOWN = 10 * 60 * 1000;
 
-type MarketState = {
-  phase: 'range' | 'accumulation' | 'trend';
-  lastAlertAt: number;
-  flags: {
-    accumulation?: number;
-    failedAccumulation?: number;
-    squeezeStarted?: number;
-  };
-};
-
+// symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
 
 // Проверяем, что в окне реально есть минимум N минут истории,
@@ -80,9 +72,11 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const snaps = getSnapshots(symbol);
       if (snaps.length < 5) return;
 
+      // 1m импульс — сравнение с предыдущим снапом
       const prev = snaps[snaps.length - 2];
       const delta = compareSnapshots(snap, prev!);
 
+      // Окна для структуры
       const snaps15m = getSnapshotsInWindow(snaps, 15);
       const snaps30m = getSnapshotsInWindow(snaps, 30);
       if (snaps15m.length < 5 || snaps30m.length < 5) return;
@@ -123,7 +117,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
       ) {
         state.flags.accumulation ??= Date.now();
-        alerts.push(`🧠 Накопление OI (30м)\n→ Идёт накопление позиций\n→ Ожидаем пробой 1м`);
+        alerts.push('🧠 Накопление OI (30м)\n→ Идёт накопление позиций\n→ Ожидаем пробой 1м');
       }
 
       // =====================
@@ -139,7 +133,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         snap.fundingRate > FUNDING_RATE_THRESHOLDS.FAILED_ACCUMULATION
       ) {
         state.flags.failedAccumulation = Date.now();
-        alerts.push(`💥 Накопление ПРОВАЛЕНО\n→ Высокий риск для ЛОНГОВ\n→ Ожидаем пробой`);
+        alerts.push('💥 Накопление ПРОВАЛЕНО\n→ Высокий риск для ЛОНГОВ\n→ Ожидаем пробой');
       }
 
       // =====================
@@ -153,11 +147,11 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta.oiChangePct < LONG.OI_CHANGE &&
         rsi > LONG.RSI_OVERBOUGHT
       ) {
-        alerts.push(`🔴 ПОДТВЕРЖДЁН СКВИЗ ЛОНГОВ\n→ Вероятно продолжение`);
+        alerts.push('🔴 ПОДТВЕРЖДЁН СКВИЗ ЛОНГОВ\n→ Вероятно продолжение');
       }
 
       // =====================
-      // 7. Funding extremes
+      // Funding extremes
       // =====================
       if (Math.abs(snap.fundingRate) > FUNDING_RATE_THRESHOLDS.EXTREME) {
         alerts.push(`💰 Высокие фандинги: ${formatFundingRate(snap.fundingRate)}`);
@@ -176,6 +170,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT &&
           (snap.fundingRate ?? 0) <= 0
         ) {
+          state.flags.entryCandidate = 'LONG';
           entryCandidate = '🟢 КАНДИДАТ НА ПОКУПКУ\n→ Накопление + нет перегрева лонгов';
         }
 
@@ -186,48 +181,88 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           (snap.fundingRate ?? 0) > 0 &&
           delta30m.priceChangePct <= 0
         ) {
+          state.flags.entryCandidate = 'SHORT';
           entryCandidate = '🔴 КАНДИДАТ НА ПРОДАЖУ\n→ Накопление + перегрев лонгов';
         }
       }
 
-      if (!alerts.length && !entryCandidate) return;
+      // =====================
+      // ENTRY CONFIRMATION (1m trigger)
+      // =====================
+      let entryConfirmation: string | null = null;
+
+      if (state.flags.entryCandidate === 'LONG') {
+        if (
+          delta.priceChangePct > impulse.PRICE_SURGE_PCT &&
+          delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
+          delta.oiChangePct >= 0 &&
+          rsi > 45
+        ) {
+          entryConfirmation =
+            '✅ ПОДТВЕРЖДЕНИЕ ПОКУПКИ 🟢\n→ Импульс 1м + объём\n→ Сигнал подтверждён локальным движением';
+        }
+      }
+
+      if (state.flags.entryCandidate === 'SHORT') {
+        if (
+          delta.priceChangePct < -impulse.PRICE_SURGE_PCT &&
+          delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
+          delta.oiChangePct >= 0 &&
+          (snap.fundingRate ?? 0) > 0
+        ) {
+          entryConfirmation =
+            '✅ ПОДТВЕРЖДЕНИЕ ПРОДАЖИ 🔴\n→ Пробой 1м + объём\n→ Лонги попали в ловушку';
+        }
+      }
+
+      // если нет ни структурных алертов, ни кандидата, ни конфирмации — молчим
+      if (!alerts.length && !entryCandidate && !entryConfirmation) return;
 
       const now = Date.now();
-      if (now - state.lastAlertAt < ALERT_COOLDOWN) return;
-      state.lastAlertAt = now;
+      // --- обычные алерты (accumulation, failed, funding) ---
+      if (alerts.length || (entryCandidate && !entryConfirmation)) {
+        if (now - state.lastAlertAt < ALERT_COOLDOWN) return;
+        state.lastAlertAt = now;
+      }
 
-      // Блок структуры выводим только если есть полное окно,
-      // иначе пишем, что идёт накопление истории.
+      // ENTRY CONFIRMATION cooldown (отдельный!)
+      if (entryConfirmation) {
+        const CONFIRM_COOLDOWN = 2 * 60 * 1000; // 2 минуты
+
+        if (state.lastConfirmationAt && now - state.lastConfirmationAt < CONFIRM_COOLDOWN) {
+          entryConfirmation = null;
+        } else {
+          state.lastConfirmationAt = now;
+        }
+      }
+
       const structureBlock =
         has15m && has30m
           ? `
-        📈 Structure:
-        • 15m Δ Price: ${delta15m.priceChangePct.toFixed(2)}%
-        • 15m Δ OI: ${delta15m.oiChangePct.toFixed(2)}%
-        
-        • 30m Δ Price: ${delta30m.priceChangePct.toFixed(2)}%
-        • 30m Δ OI: ${delta30m.oiChangePct.toFixed(2)}%`
+📈 Structure:
+• 15m Δ Price: ${delta15m.priceChangePct.toFixed(2)}%
+• 15m Δ OI: ${delta15m.oiChangePct.toFixed(2)}%
+
+• 30m Δ Price: ${delta30m.priceChangePct.toFixed(2)}%
+• 30m Δ OI: ${delta30m.oiChangePct.toFixed(2)}%`
           : `
-        📈 Structure:
-        • Collecting history… need full 30m window`;
+📈 Structure:
+• Сбор истории… нужно полное окно 30м`;
 
       onAlert(
-        `
-      ⚠️ *${symbol}*
-      Phase: ${state.phase.toUpperCase()}
-      Trend: ${trendLabel}
-      
-      ${alerts.join('\n\n')}
-      
-      ${entryCandidate ? `\n${entryCandidate}\n` : ''}
-      
-      📊 1m Impulse:
-      • Price: ${delta.priceChangePct.toFixed(2)}%
-      • OI: ${delta.oiChangePct.toFixed(2)}%
-      • Volume: ${delta.volumeChangePct.toFixed(2)}%
-      • Funding: ${formatFundingRate(snap.fundingRate)}
-      ${structureBlock}
-        `.trim()
+        `⚠️ *${symbol}*
+Phase: ${state.phase.toUpperCase()}
+Trend: ${trendLabel}
+
+${alerts.join('\n\n')}
+
+${entryCandidate ? `${entryCandidate}\n` : ''}${entryConfirmation ? `${entryConfirmation}\n` : ''}
+
+📊 1m Impulse:
+• Price: ${delta.priceChangePct.toFixed(2)}%
+• OI: ${delta.oiChangePct.toFixed(2)}%
+• Volume: ${delta.volumeChangePct.toFixed(2)}%
+• Funding: ${formatFundingRate(snap.fundingRate)}${structureBlock}`
       );
     } catch (err) {
       console.error(`❌ Market watcher error (${symbol}):`, err);
