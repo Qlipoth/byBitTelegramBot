@@ -79,9 +79,20 @@ export function calculatePriceChanges(prices: number[]): number[] {
  * @param rate - Funding rate (e.g., 0.0001 for 0.01%)
  * @returns Formatted string with percentage and who pays (e.g., "0.0250% (Longs pay)")
  */
-export function formatFundingRate(rate: number | undefined): string {
+export function formatFundingRate(rate?: number): string {
   const safeRate = rate ?? 0;
-  return `${(Math.abs(safeRate) * 100).toFixed(4)}% (${safeRate > 0 ? 'Longs' : 'Shorts'} pay)`;
+
+  console.log(rate, safeRate);
+
+  if (safeRate > 0) {
+    return `${(safeRate * 100).toFixed(4)}% (Longs pay Shorts)`;
+  }
+
+  if (safeRate < 0) {
+    return `${(Math.abs(safeRate) * 100).toFixed(4)}% (Shorts pay Longs)`;
+  }
+
+  return `0.0000% (Neutral)`;
 }
 
 export function getSnapshotsInWindow(snaps: any[], minutes: number) {
