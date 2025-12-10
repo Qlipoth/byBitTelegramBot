@@ -28,6 +28,16 @@ type MarketState = {
 
 const stateBySymbol = new Map<string, MarketState>();
 
+// Проверяем, что в окне реально есть минимум N минут истории,
+// а не просто несколько свежих снапов после рестарта.
+function hasFullWindow(snaps: any[], minutes: number): boolean {
+  if (snaps.length < 2) return false;
+  const first = snaps[0];
+  const last = snaps[snaps.length - 1];
+  const spanMs = last.timestamp - first.timestamp;
+  return spanMs >= minutes * 60_000;
+}
+
 function detectMarketPhase(delta30m: any): MarketState['phase'] {
   if (Math.abs(delta30m.priceChangePct) > 2 && delta30m.oiChangePct > 0) {
     return 'trend';
@@ -60,7 +70,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
   const impulse = isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS;
   const structure = isPriorityCoin ? LIQUID_STRUCTURE_THRESHOLDS : BASE_STRUCTURE_THRESHOLDS;
 
-  console.log(`🚀 Market watcher started for ${symbol}`);
+  console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
   return setInterval(async () => {
     try {
@@ -80,9 +90,16 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const delta15m = compareSnapshots(snap, snaps15m[0]);
       const delta30m = compareSnapshots(snap, snaps30m[0]);
 
+      // Проверяем, что действительно есть 15/30 минут истории,
+      // а не 3–5 минут после рестарта.
+      const has15m = hasFullWindow(snaps15m, 15);
+      const has30m = hasFullWindow(snaps30m, 30);
+
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
-      const trendLabel = detectTrend({ ...delta30m, symbol });
+
+      // Тренд и фаза рынка считаем только если есть полноценное 30m окно.
+      const trendLabel = has30m ? detectTrend({ ...delta30m, symbol }) : '📡 Сбор данных';
 
       let state = stateBySymbol.get(symbol);
       if (!state) {
@@ -90,7 +107,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         stateBySymbol.set(symbol, state);
       }
 
-      state.phase = detectMarketPhase(delta30m);
+      state.phase = has30m ? detectMarketPhase(delta30m) : 'range';
 
       const alerts: string[] = [];
 
@@ -98,19 +115,23 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // Accumulation (structure)
       // =====================
       if (
+        has15m &&
+        has30m &&
         state.phase === 'accumulation' &&
         delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
         delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
         Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
       ) {
         state.flags.accumulation ??= Date.now();
-        alerts.push(`🧠 OI accumulation (30m)\n→ Positions building\n→ Wait for 1m break`);
+        alerts.push(`🧠 Накопление OI (30м)\n→ Идёт накопление позиций\n→ Ожидаем пробой 1м`);
       }
 
       // =====================
       // Failed accumulation → squeeze start
       // =====================
       if (
+        has15m &&
+        has30m &&
         state.flags.accumulation &&
         Date.now() - state.flags.accumulation > 15 * 60_000 &&
         delta.priceChangePct < -impulse.PRICE_DROP_PCT * 1.5 &&
@@ -118,7 +139,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         snap.fundingRate > FUNDING_RATE_THRESHOLDS.FAILED_ACCUMULATION
       ) {
         state.flags.failedAccumulation = Date.now();
-        alerts.push(`💥 Accumulation FAILED\n→ High risk LONGS\n→ Watch breakdown`);
+        alerts.push(`💥 Накопление ПРОВАЛЕНО\n→ Высокий риск для ЛОНГОВ\n→ Ожидаем пробой`);
       }
 
       // =====================
@@ -132,42 +153,80 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta.oiChangePct < LONG.OI_CHANGE &&
         rsi > LONG.RSI_OVERBOUGHT
       ) {
-        alerts.push(`🔴 LONG SQUEEZE CONFIRMED\n→ Continuation likely`);
+        alerts.push(`🔴 ПОДТВЕРЖДЁН СКВИЗ ЛОНГОВ\n→ Вероятно продолжение`);
       }
 
       // =====================
       // 7. Funding extremes
       // =====================
       if (Math.abs(snap.fundingRate) > FUNDING_RATE_THRESHOLDS.EXTREME) {
-        alerts.push(`💰 Extreme funding: ${formatFundingRate(snap.fundingRate)}`);
+        alerts.push(`💰 Высокие фандинги: ${formatFundingRate(snap.fundingRate)}`);
       }
 
-      if (!alerts.length) return;
+      // =====================
+      // Entry Candidate (LONG / SHORT) — только при полном окне
+      // =====================
+      let entryCandidate: string | null = null;
+
+      if (has15m && has30m && state.phase === 'accumulation') {
+        // LONG candidate
+        if (
+          delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
+          delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
+          Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT &&
+          (snap.fundingRate ?? 0) <= 0
+        ) {
+          entryCandidate = '🟢 КАНДИДАТ НА ПОКУПКУ\n→ Накопление + нет перегрева лонгов';
+        }
+
+        // SHORT candidate
+        if (
+          delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
+          delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
+          (snap.fundingRate ?? 0) > 0 &&
+          delta30m.priceChangePct <= 0
+        ) {
+          entryCandidate = '🔴 КАНДИДАТ НА ПРОДАЖУ\n→ Накопление + перегрев лонгов';
+        }
+      }
+
+      if (!alerts.length && !entryCandidate) return;
 
       const now = Date.now();
       if (now - state.lastAlertAt < ALERT_COOLDOWN) return;
       state.lastAlertAt = now;
 
+      // Блок структуры выводим только если есть полное окно,
+      // иначе пишем, что идёт накопление истории.
+      const structureBlock =
+        has15m && has30m
+          ? `
+        📈 Structure:
+        • 15m Δ Price: ${delta15m.priceChangePct.toFixed(2)}%
+        • 15m Δ OI: ${delta15m.oiChangePct.toFixed(2)}%
+        
+        • 30m Δ Price: ${delta30m.priceChangePct.toFixed(2)}%
+        • 30m Δ OI: ${delta30m.oiChangePct.toFixed(2)}%`
+          : `
+        📈 Structure:
+        • Collecting history… need full 30m window`;
+
       onAlert(
         `
-⚠️ *${symbol}*
-Phase: ${state.phase.toUpperCase()}
-Trend: ${trendLabel}
-
-${alerts.join('\n\n')}
-
-📊 1m Impulse:
-• Price: ${delta.priceChangePct.toFixed(2)}%
-• OI: ${delta.oiChangePct.toFixed(2)}%
-• Volume: ${delta.volumeChangePct.toFixed(2)}%
-• Funding: ${formatFundingRate(snap.fundingRate)}
-
-📈 Structure:
-• 15m Δ Price: ${delta15m.priceChangePct.toFixed(2)}%
-• 15m Δ OI: ${delta15m.oiChangePct.toFixed(2)}%
-
-• 30m Δ Price: ${delta30m.priceChangePct.toFixed(2)}%
-• 30m Δ OI: ${delta30m.oiChangePct.toFixed(2)}%
+      ⚠️ *${symbol}*
+      Phase: ${state.phase.toUpperCase()}
+      Trend: ${trendLabel}
+      
+      ${alerts.join('\n\n')}
+      
+      ${entryCandidate ? `\n${entryCandidate}\n` : ''}
+      
+      📊 1m Impulse:
+      • Price: ${delta.priceChangePct.toFixed(2)}%
+      • OI: ${delta.oiChangePct.toFixed(2)}%
+      • Volume: ${delta.volumeChangePct.toFixed(2)}%
+      • Funding: ${formatFundingRate(snap.fundingRate)}
+      ${structureBlock}
         `.trim()
       );
     } catch (err) {
