@@ -220,7 +220,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       const now = Date.now();
       // --- обычные алерты (accumulation, failed, funding) ---
-      if (alerts.length || (entryCandidate && !entryConfirmation)) {
+      if ((alerts.length || entryCandidate) && !entryConfirmation) {
         if (now - state.lastAlertAt < ALERT_COOLDOWN) return;
         state.lastAlertAt = now;
       }
