@@ -10,22 +10,22 @@ const subscribers = new Set<number>();
 const activeTimestamps = new Map<number, number>();
 
 // Clean up inactive subscribers every hour
-const cleanupInterval = setInterval(
-  () => {
-    const now = Date.now();
-    const dayInMs = 24 * 60 * 60 * 1000;
-
-    for (const chatId of subscribers) {
-      const lastActive = activeTimestamps.get(chatId) || 0;
-      if (now - lastActive > dayInMs) {
-        console.log(`👋 Removing inactive chat: ${chatId}`);
-        subscribers.delete(chatId);
-        activeTimestamps.delete(chatId);
-      }
-    }
-  },
-  60 * 60 * 1000
-); // Every hour
+// const cleanupInterval = setInterval(
+//   () => {
+//     const now = Date.now();
+//     const dayInMs = 24 * 60 * 60 * 1000;
+//
+//     for (const chatId of subscribers) {
+//       const lastActive = activeTimestamps.get(chatId) || 0;
+//       if (now - lastActive > dayInMs) {
+//         console.log(`👋 Removing inactive chat: ${chatId}`);
+//         subscribers.delete(chatId);
+//         activeTimestamps.delete(chatId);
+//       }
+//     }
+//   },
+//   60 * 60 * 1000
+//);
 
 const g = global as any;
 if (g.__BOT_STARTED__) {
@@ -40,23 +40,16 @@ async function shutdown(signal: string) {
 
   console.log(`🛑 Shutdown (${signal})`);
 
-  // Cleanup resources
-  clearInterval(cleanupInterval);
   stopWatchers?.();
   stopWatchers = null;
-  subscribers.clear();
-  activeTimestamps.clear();
 
   try {
     await bot.stop();
-  } catch (error) {
-    console.error('Error during bot shutdown:', error);
+  } catch (err) {
+    console.error('Bot shutdown error:', err);
   }
 
-  setTimeout(() => {
-    console.log('✅ Exit');
-    process.exit(0);
-  }, 500);
+  process.exit(0);
 }
 
 process.on('SIGINT', () => {
