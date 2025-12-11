@@ -85,20 +85,20 @@ export let ALERT_THRESHOLDS = { ...BASE_ALERT_THRESHOLDS };
 // IMPULSE (1m) thresholds
 // =====================
 export const BASE_IMPULSE_THRESHOLDS = {
-  VOLUME_SPIKE_PCT: 6,
-  VOLUME_HIGH_PCT: 10,
+  VOLUME_SPIKE_PCT: 8, // раньше 6
+  VOLUME_HIGH_PCT: 15, // раньше 10
 
-  PRICE_STABLE_PCT: 0.25,
-  PRICE_DROP_PCT: 0.5,
-  PRICE_SURGE_PCT: 0.6,
+  PRICE_STABLE_PCT: 0.35, // раньше 0.25
+  PRICE_DROP_PCT: 0.8, // раньше 0.5
+  PRICE_SURGE_PCT: 1.0, // раньше 0.6
 
-  OI_INCREASE_PCT: 0.6,
-  OI_SURGE_PCT: 1.2,
+  OI_INCREASE_PCT: 1.0, // раньше 0.6
+  OI_SURGE_PCT: 2.0, // раньше 1.2
 } as const;
 
 export const LIQUID_IMPULSE_THRESHOLDS = {
-  VOLUME_SPIKE_PCT: 4,
-  VOLUME_HIGH_PCT: 8,
+  VOLUME_SPIKE_PCT: 6,
+  VOLUME_HIGH_PCT: 10,
 
   PRICE_STABLE_PCT: 0.18,
   PRICE_DROP_PCT: 0.4,
@@ -112,28 +112,29 @@ export const LIQUID_IMPULSE_THRESHOLDS = {
 // STRUCTURE (15m) thresholds
 // =====================
 export const BASE_STRUCTURE_THRESHOLDS = {
-  VOLUME_SPIKE_PCT: 15,
-  VOLUME_HIGH_PCT: 25,
+  VOLUME_SPIKE_PCT: 20,
+  VOLUME_HIGH_PCT: 35,
 
-  PRICE_STABLE_PCT: 0.7,
-  PRICE_DROP_PCT: 1.2,
-  PRICE_SURGE_PCT: 1.4,
+  PRICE_STABLE_PCT: 1.0,
+  PRICE_DROP_PCT: 1.6,
+  PRICE_SURGE_PCT: 2.0,
 
-  OI_INCREASE_PCT: 2.5,
-  OI_SURGE_PCT: 4.5,
+  OI_INCREASE_PCT: 3.5, // раньше 2.5
+  OI_SURGE_PCT: 7.0, // раньше 4.5
 } as const;
 
 export const LIQUID_STRUCTURE_THRESHOLDS = {
-  VOLUME_SPIKE_PCT: 10,
-  VOLUME_HIGH_PCT: 18,
+  VOLUME_SPIKE_PCT: 9,
+  VOLUME_HIGH_PCT: 15,
 
-  PRICE_STABLE_PCT: 0.45,
-  PRICE_DROP_PCT: 0.9,
-  PRICE_SURGE_PCT: 1.1,
+  PRICE_STABLE_PCT: 0.4,
+  PRICE_DROP_PCT: 0.8,
+  PRICE_SURGE_PCT: 1.0,
 
-  OI_INCREASE_PCT: 1.8,
-  OI_SURGE_PCT: 3.5,
-} as const;
+  OI_INCREASE_PCT: 1.4, // был 1.8
+  OI_SURGE_PCT: 2.5, // был 3.5
+};
+
 // Trend thresholds for normal coins
 export const BASE_TREND_THRESHOLDS = {
   PRICE_CHANGE: 2, // 2% price change for significant move

@@ -89,7 +89,7 @@ export function formatFundingRate(rate?: number): string {
   }
 
   if (safeRate < 0) {
-    return `${(Math.abs(safeRate) * 100).toFixed(4)}% (Shorts pay Longs)`;
+    return `${(safeRate * 100).toFixed(4)}% (Shorts pay Longs)`;
   }
 
   return `0.0000% (Neutral)`;
