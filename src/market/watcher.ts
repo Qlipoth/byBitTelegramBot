@@ -12,23 +12,13 @@ import {
   BASE_STRUCTURE_THRESHOLDS,
   LIQUID_STRUCTURE_THRESHOLDS,
 } from './constants.market.js';
-import { calculateRSI, detectTrend, formatFundingRate, getSnapshotsInWindow } from './utils.js';
+import { calculateRSI, detectTrend, formatFundingRate } from './utils.js';
 import type { MarketState } from './types.js';
 
 const ALERT_COOLDOWN = 10 * 60 * 1000;
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
-
-// Проверяем, что в окне реально есть минимум N минут истории,
-// а не просто несколько свежих снапов после рестарта.
-function hasFullWindow(snaps: any[], minutes: number): boolean {
-  if (snaps.length < 2) return false;
-  const first = snaps[0];
-  const last = snaps[snaps.length - 1];
-  const spanMs = last.timestamp - first.timestamp;
-  return spanMs >= minutes * 60_000;
-}
 
 function detectMarketPhase(delta30m: any): MarketState['phase'] {
   if (Math.abs(delta30m.priceChangePct) > 2 && delta30m.oiChangePct > 0) {
@@ -77,17 +67,18 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const delta = compareSnapshots(snap, prev!);
 
       // Окна для структуры
-      const snaps15m = getSnapshotsInWindow(snaps, 15);
-      const snaps30m = getSnapshotsInWindow(snaps, 30);
-      if (snaps15m.length < 5 || snaps30m.length < 5) return;
-
-      const delta15m = compareSnapshots(snap, snaps15m[0]);
-      const delta30m = compareSnapshots(snap, snaps30m[0]);
+      const snaps15m = snaps.slice(-15);
+      const snaps30m = snaps.slice(-30);
 
       // Проверяем, что действительно есть 15/30 минут истории,
       // а не 3–5 минут после рестарта.
-      const has15m = hasFullWindow(snaps15m, 15);
-      const has30m = hasFullWindow(snaps30m, 30);
+      const has15m = snaps15m.length >= 15;
+      const has30m = snaps30m.length >= 30;
+
+      if (snaps15m.length < 5 || snaps30m.length < 5) return;
+
+      const delta15m = compareSnapshots(snap, snaps15m[0]!);
+      const delta30m = compareSnapshots(snap, snaps30m[0]!);
 
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
@@ -104,6 +95,23 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       state.phase = has30m ? detectMarketPhase(delta30m) : 'range';
 
       const alerts: string[] = [];
+
+      console.log(`
+        === DEBUG ${symbol} ===
+        snaps: ${snaps.length}
+        has15m: ${has15m}
+        has30m: ${has30m}
+        phase: ${state.phase}
+        oi15: ${delta15m.oiChangePct.toFixed(2)}
+        oi30: ${delta30m.oiChangePct.toFixed(2)}
+        price30: ${delta30m.priceChangePct.toFixed(2)}
+        funding: ${snap.fundingRate}
+        entryCandidate: ${state.flags.entryCandidate}
+        lastAlertAt: ${state.lastAlertAt}
+        lastConfirmationAt: ${state.lastConfirmationAt}
+        alertsCount: ${alerts.length}
+        ========================
+        `);
 
       // =====================
       // Accumulation (structure)
@@ -220,7 +228,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       const now = Date.now();
       // --- обычные алерты (accumulation, failed, funding) ---
-      if ((alerts.length || entryCandidate) && !entryConfirmation) {
+      if (alerts.length || entryCandidate) {
+        console.log('entryCandidate', entryCandidate);
         if (now - state.lastAlertAt < ALERT_COOLDOWN) return;
         state.lastAlertAt = now;
       }
@@ -228,7 +237,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // ENTRY CONFIRMATION cooldown (отдельный!)
       if (entryConfirmation) {
         const CONFIRM_COOLDOWN = 2 * 60 * 1000; // 2 минуты
-
+        console.log('entryConfirmation', entryConfirmation);
         if (state.lastConfirmationAt && now - state.lastConfirmationAt < CONFIRM_COOLDOWN) {
           entryConfirmation = null;
         } else {

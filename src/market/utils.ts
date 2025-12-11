@@ -94,7 +94,3 @@ export function formatFundingRate(rate?: number): string {
 
   return `0.0000% (Neutral)`;
 }
-
-export function getSnapshotsInWindow(snaps: any[], minutes: number) {
-  return snaps.filter(s => Date.now() - s.timestamp <= minutes * 60_000);
-}
