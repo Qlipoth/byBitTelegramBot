@@ -1,6 +1,7 @@
-import { RestClientV5 } from 'bybit-api';
+import { RestClientV5, WebsocketClient } from 'bybit-api';
 import type { MarketSnapshot } from '../market/types.js';
 import { PRIORITY_COINS } from '../market/constants.market.js';
+import { initCVDTracker } from '../market/cvdTracker.js';
 
 // Initialize Bybit client
 const bybitClient = new RestClientV5({
@@ -8,6 +9,15 @@ const bybitClient = new RestClientV5({
   secret: process.env.BYBIT_SECRET_KEY!,
   testnet: false, // Set to true for testnet
 });
+
+export const ws = new WebsocketClient({
+  key: process.env.BYBIT_API_KEY!, // можно без ключей для public данных
+  secret: process.env.BYBIT_SECRET_KEY!,
+  market: 'v5',
+  testnet: false,
+});
+
+initCVDTracker(ws);
 
 export async function getMarketSnapshot(symbol: string): Promise<MarketSnapshot> {
   try {

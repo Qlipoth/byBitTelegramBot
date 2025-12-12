@@ -18,11 +18,14 @@ export interface MarketDelta {
 export interface MarketState {
   phase: 'range' | 'accumulation' | 'trend';
   lastAlertAt: number;
-  lastConfirmationAt?: number; // ✅ вход подтверждён
+  lastConfirmationAt?: number;
   flags: {
+    entryCandidate?: 'LONG' | 'SHORT';
+    lastEntrySide?: 'LONG' | 'SHORT';
+    accumulationStrong?: boolean;
     accumulation?: number;
     failedAccumulation?: number;
     squeezeStarted?: number;
-    entryCandidate?: 'LONG' | 'SHORT' | undefined;
+    [key: string]: any;
   };
 }
