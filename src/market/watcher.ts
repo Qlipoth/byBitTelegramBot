@@ -231,7 +231,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         impulse: isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS,
       });
 
-      console.log('0) entrySignal:', entrySignal);
+      console.log(`${symbol}: `, '0) entrySignal:', entrySignal);
 
       // =====================
       // Signal Agreement Check
