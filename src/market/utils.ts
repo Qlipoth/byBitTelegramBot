@@ -1,5 +1,11 @@
 import { getTrendThresholds, TREND_THRESHOLDS } from './constants.market.js';
 
+interface EntryScores {
+  longScore: number;
+  shortScore: number;
+  entrySignal: string;
+}
+
 // =====================
 // Trend detection (STRUCTURE, not impulse)
 // =====================
@@ -13,21 +19,21 @@ export function detectTrend(deltaBase: {
     : TREND_THRESHOLDS;
 
   if (deltaBase.priceChangePct > PRICE_CHANGE && deltaBase.oiChangePct > OI_CHANGE) {
-    return '📈 Бычий тренд';
+    return { label: '📈 Бычий тренд', isBull: true, isBear: false };
   }
 
   if (deltaBase.priceChangePct < -PRICE_CHANGE && deltaBase.oiChangePct > OI_CHANGE) {
-    return '📉 Медвежий тренд';
+    return { label: '📉 Медвежий тренд', isBull: false, isBear: true };
   }
 
   if (
     Math.abs(deltaBase.priceChangePct) < ACCUMULATION_PRICE_BAND &&
     deltaBase.oiChangePct > OI_CHANGE
   ) {
-    return '🧠 Фаза накопления';
+    return { label: '🧠 Фаза накопления', isBull: false, isBear: false };
   }
 
-  return '😐 Флэт / неопределённость';
+  return { label: '😐 Флэт / неопределённость', isBull: false, isBear: false };
 }
 
 export function calculateRSI(prices: number[], period: number = 14): number {
@@ -85,12 +91,107 @@ export function formatFundingRate(rate?: number): string {
   console.log(rate, safeRate);
 
   if (safeRate > 0) {
-    return `${(safeRate * 100).toFixed(4)}% (Longs pay Shorts)`;
+    return `${(safeRate * 100).toFixed(4)}% (Лонги платят шортам)`;
   }
 
   if (safeRate < 0) {
-    return `${(safeRate * 100).toFixed(4)}% (Shorts pay Longs)`;
+    return `${(safeRate * 100).toFixed(4)}% (Шорты платят лонгам)`;
   }
 
-  return `0.0000% (Neutral)`;
+  return `0.0000% (Нейтрально)`;
+}
+
+export function calculateEntryScores({
+  state,
+  delta,
+  delta15m,
+  delta30m,
+  snap,
+  cvd3m,
+  cvd15m,
+  rsi,
+  impulse,
+  isBull,
+  isBear,
+}: {
+  state: any;
+  delta: any;
+  delta15m: any;
+  delta30m: any;
+  snap: any;
+  cvd3m: number;
+  cvd15m: number;
+  rsi: number;
+
+  impulse: any;
+  isBull: boolean;
+  isBear: boolean;
+}): EntryScores {
+  let longScore = 0;
+  let shortScore = 0;
+
+  // 1. Market phase (reduced weight)
+  if (state.phase === 'accumulation') longScore += 10;
+  if (state.phase === 'distribution') shortScore += 10;
+
+  if (state.flags?.accumulationStrong) longScore += 5;
+  if (state.flags?.distributionStrong) shortScore += 5;
+
+  // 2. OI dynamics (logarithmic)
+  const oi30 = delta30m?.oiChangePct || 0;
+  const oi15 = delta15m?.oiChangePct || 0;
+
+  longScore += Math.min(Math.log1p(Math.max(oi30, 0)) * 8, 15);
+  longScore += Math.min(Math.log1p(Math.max(oi15, 0)) * 6, 12);
+  shortScore += Math.min(Math.log1p(Math.max(-oi30, 0)) * 8, 15);
+  shortScore += Math.min(Math.log1p(Math.max(-oi15, 0)) * 6, 12);
+
+  // 3. Funding (contrarian)
+  if ((snap.fundingRate ?? 0) < 0) longScore += 6;
+  if ((snap.fundingRate ?? 0) > 0) shortScore += 6;
+
+  // 4. CVD strength (normalized)
+  const cvdNorm15 = Math.sign(cvd15m) * Math.min(Math.abs(cvd15m) / 20000, 1);
+  const cvdNorm3 = Math.sign(cvd3m) * Math.min(Math.abs(cvd3m) / 10000, 1);
+
+  longScore += Math.max(cvdNorm15 * 15, 0);
+  longScore += Math.max(cvdNorm3 * 8, 0);
+  shortScore += Math.max(-cvdNorm15 * 15, 0);
+  shortScore += Math.max(-cvdNorm3 * 8, 0);
+
+  // 5. 1m impulse
+  if (delta?.priceChangePct > impulse?.PRICE_SURGE_PCT) longScore += 10;
+  if (delta?.priceChangePct < -(impulse?.PRICE_SURGE_PCT || 0)) shortScore += 10;
+
+  if (delta?.volumeChangePct > impulse?.VOLUME_SPIKE_PCT) longScore += 8;
+  if (delta?.volumeChangePct < -(impulse?.VOLUME_SPIKE_PCT || 0)) shortScore += 8;
+
+  if ((delta?.oiChangePct || 0) > 0) longScore += 5;
+  if ((delta?.oiChangePct || 0) < 0) shortScore += 5;
+
+  // 6. RSI (clear zones)
+  if (rsi > 55) longScore += 8;
+  if (rsi < 45) shortScore += 8;
+
+  // 7. Trend strength
+  if (isBull) longScore += 12;
+  if (isBear) shortScore += 12;
+
+  // Final normalization
+  longScore = Math.min(100, Math.max(0, longScore));
+  shortScore = Math.min(100, Math.max(0, shortScore));
+
+  let entrySignal = `⚪ Нет четкого тренда (LONG ${Math.round(longScore)}/100 vs SHORT ${Math.round(shortScore)}/100)`;
+
+  if (longScore >= 70 && longScore - shortScore >= 12) {
+    entrySignal = `🟢 Сильный LONG (${Math.round(longScore)}/100)`;
+  } else if (shortScore >= 70 && shortScore - longScore >= 12) {
+    entrySignal = `🔴 Сильный SHORT (${Math.round(shortScore)}/100)`;
+  }
+
+  return {
+    longScore,
+    shortScore,
+    entrySignal,
+  };
 }

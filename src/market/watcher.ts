@@ -11,12 +11,13 @@ import {
   LIQUID_IMPULSE_THRESHOLDS,
   BASE_STRUCTURE_THRESHOLDS,
   LIQUID_STRUCTURE_THRESHOLDS,
+  ALERT_COOLDOWN,
+  CONFIRM_COOLDOWN,
 } from './constants.market.js';
-import { calculateRSI, detectTrend, formatFundingRate } from './utils.js';
+import { calculateRSI, detectTrend, formatFundingRate, calculateEntryScores } from './utils.js';
 import type { MarketState } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
-
-const ALERT_COOLDOWN = 10 * 60 * 1000;
+import { calcPercentChange, getCvdThreshold } from './candleBuilder.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -91,8 +92,18 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
 
-      // Тренд и фаза рынка считаем только если есть полноценное 30m окно.
-      const trendLabel = has30m ? detectTrend({ ...delta30m, symbol }) : '📡 Сбор данных';
+      let trendLabel = '📡 Сбор данных';
+      const trendObj = {
+        isBull: false,
+        isBear: false,
+      };
+
+      if (has30m) {
+        const { label, isBull, isBear } = detectTrend({ ...delta30m, symbol });
+        trendLabel = label;
+        trendObj.isBear = isBear;
+        trendObj.isBull = isBull;
+      }
 
       let state = stateBySymbol.get(symbol);
       if (!state) {
@@ -168,12 +179,17 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // =====================
       // CVD Divergence Detection
       // =====================
-      if (Math.abs(delta15m.priceChangePct) > 4) {
-        if (delta15m.priceChangePct > 4 && cvd15m < -30_000) {
-          alerts.push('🔄 БЫЧЬЯ ДИВЕРГЕНЦИЯ\nРост цены на шортовых атаках — скоро вниз');
+
+      const pricePercentChange = calcPercentChange(symbol);
+      const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+      if (Math.abs(pricePercentChange) > moveThreshold) {
+        // Bearish Divergence: Price up but CVD down
+        if (pricePercentChange > 0 && cvd15m < -cvdThreshold) {
+          alerts.push('🔴 МЕДВЕЖЬЯ ДИВЕРГЕНЦИЯ\nРост цены на слабых покупках — разворот вниз');
         }
-        if (delta15m.priceChangePct < -4 && cvd15m > 30_000) {
-          alerts.push('🔄 БЫЧЬЯ ДИВЕРГЕНЦИЯ\nПадение на скрытых покупках — отскок близко');
+        // Bullish Divergence: Price down but CVD up
+        if (pricePercentChange < 0 && cvd15m > cvdThreshold) {
+          alerts.push('🟢 БЫЧЬЯ ДИВЕРГЕНЦИЯ\nПадение на сильных покупках — разворот вверх');
         }
       }
 
@@ -183,6 +199,23 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       if (Math.abs(snap.fundingRate) > FUNDING_RATE_THRESHOLDS.EXTREME) {
         alerts.push(`💰 Высокие фандинги: ${formatFundingRate(snap.fundingRate)}`);
       }
+
+      // =====================
+      // Entry Score Calculation
+      // =====================
+      const { entrySignal } = calculateEntryScores({
+        state,
+        delta,
+        delta15m,
+        delta30m,
+        snap,
+        cvd3m: cvd3m || 0,
+        cvd15m: cvd15m || 0,
+        rsi: rsi || 50,
+        isBull: trendObj.isBull,
+        isBear: trendObj.isBear,
+        impulse: isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS,
+      });
 
       // =====================
       // Entry Candidate (LONG / SHORT) — только при полном окне
@@ -279,7 +312,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       // подтверждение входа — свой отдельный cooldown
       if (entryConfirmation) {
-        const CONFIRM_COOLDOWN = 2 * 60_000;
         console.log('entryConfirmation', entryConfirmation);
         if (state.lastConfirmationAt && now - state.lastConfirmationAt < CONFIRM_COOLDOWN) {
           entryConfirmation = null;
@@ -300,15 +332,14 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           : `
 📈 Structure:
 • Сбор истории… нужно полное окно 30м`;
-
       onAlert(
         `⚠️ *${symbol}*
 Phase: ${state.phase.toUpperCase()}
 Trend: ${trendLabel}
 
 ${alerts.join('\n\n')}
-
 ${entryCandidate ? `${entryCandidate}\n` : ''}${entryConfirmation ? `${entryConfirmation}\n` : ''}
+${entrySignal}
 
 📊 1m Impulse:
 • Price: ${delta.priceChangePct.toFixed(2)}%

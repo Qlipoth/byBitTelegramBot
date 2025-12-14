@@ -205,3 +205,5 @@ export const STRUCTURE_WINDOW = 15;
 
 // These coins will always be included in the top liquid coins
 export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;
+export const ALERT_COOLDOWN = 10 * 60 * 1000;
+export const CONFIRM_COOLDOWN = 2 * 60_000;

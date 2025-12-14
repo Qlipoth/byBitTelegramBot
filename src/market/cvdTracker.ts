@@ -1,5 +1,6 @@
 // cvdTracker.ts
 import { WebsocketClient } from 'bybit-api';
+import { handleTrade } from './candleBuilder.js';
 
 const cvdCurrent = new Map<string, number>();
 const cvdSnapshot = new Map<string, { time: number; value: number }[]>();
@@ -8,8 +9,8 @@ export function initCVDTracker(ws: WebsocketClient) {
   ws.on('update', data => {
     if (data.topic.startsWith('publicTrade') && data.data?.length) {
       for (const t of data.data) {
-        //console.log(t);
         const symbol = t.s;
+        handleTrade(symbol, t);
         const isBuyerMaker = t.S === 'Sell';
         const vol = parseFloat(t.v);
         const delta = isBuyerMaker ? -vol : +vol;
