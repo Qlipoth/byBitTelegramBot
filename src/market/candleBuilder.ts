@@ -170,9 +170,5 @@ export function getCvdThreshold(symbol: string) {
   const moveThreshold = Math.max(atrPct * CONFIG.ATR_MULTIPLIER, CONFIG.MIN_MOVE_THRESHOLD);
   const cvdThreshold = Math.max(atrPct * CONFIG.CVD_MULTIPLIER, CONFIG.MIN_CVD_THRESHOLD);
 
-  console.log(
-    `[${symbol}] ATR: ${atrPct.toFixed(2)}%, Move Threshold: ${moveThreshold.toFixed(2)}%, CVD Threshold: ${cvdThreshold.toFixed(0)}`
-  );
-
   return { moveThreshold, cvdThreshold };
 }

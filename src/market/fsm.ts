@@ -20,6 +20,8 @@ export interface FSMContext {
   currentPrice?: number | undefined;
 }
 
+type ActionType = 'NONE' | 'SETUP' | 'CONFIRM' | 'ENTER' | 'EXIT';
+
 export function createFSM(): FSMContext {
   return {
     state: 'IDLE',
@@ -27,20 +29,20 @@ export function createFSM(): FSMContext {
   };
 }
 
+interface InputParams {
+  signal: 'LONG' | 'SHORT' | 'NONE';
+  confirmed: boolean;
+  now: number;
+  exitSignal: boolean;
+}
+
 export function fsmStep(
   fsm: FSMContext,
-  input: {
-    signal: 'LONG' | 'SHORT' | 'NONE';
-    confirmed: boolean;
-    now: number;
-    cvd3m?: number;
-    fundingRate?: number;
-    currentPrice?: number;
-  }
+  input: InputParams
 ): {
-  action: 'NONE' | 'SETUP' | 'CONFIRM' | 'ENTER' | 'EXIT';
+  action: ActionType;
 } {
-  const { signal, confirmed, now, cvd3m, fundingRate, currentPrice } = input;
+  const { signal, confirmed, now, exitSignal } = input;
 
   // Update last action timestamp
   fsm.lastActionAt = now;
@@ -76,7 +78,6 @@ export function fsmStep(
       if (confirmed) {
         fsm.state = 'OPEN';
         fsm.openedAt = now;
-        fsm.entryPrice = currentPrice;
         return { action: 'ENTER' };
       }
 
@@ -84,17 +85,7 @@ export function fsmStep(
     }
 
     case 'OPEN': {
-      const shouldExit = shouldExitPosition({
-        fsm,
-        signal: signal,
-        cvd3m: cvd3m || 0, // или другое значение по умолчанию
-        fundingRate: fundingRate || 0,
-        now: now,
-        currentPrice: currentPrice || 0,
-        entryPrice: fsm.entryPrice || 0,
-      });
-
-      if (shouldExit) {
+      if (exitSignal) {
         fsm.state = 'EXIT';
         return { action: 'EXIT' };
       }

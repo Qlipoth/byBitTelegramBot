@@ -22,10 +22,16 @@ import {
   getSignalAgreement,
   confirmEntry,
 } from './utils.js';
-import { createFSM, fsmStep } from './fsm.js';
+import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
 import { calcPercentChange, getCvdThreshold } from './candleBuilder.js';
+import {
+  closePaperPosition,
+  getPaperPosition,
+  hasOpenPaperPosition,
+  openPaperPosition,
+} from './paperPositionManager.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -225,6 +231,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         impulse: isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS,
       });
 
+      console.log('0) entrySignal:', entrySignal);
+
       // =====================
       // Signal Agreement Check
       // =====================
@@ -239,6 +247,9 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         fundingRate: Number(snap.fundingRate || 0),
       });
 
+      console.log('==============================================');
+      console.log('0.1) signal is:', signal);
+
       // =====================
       // FSM Integration
       // =====================
@@ -247,6 +258,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         tradeFSMBySymbol.set(symbol, createFSM());
       }
       const fsm = tradeFSMBySymbol.get(symbol)!;
+
+      console.log('1) FSM:', JSON.stringify(fsm));
       let confirmed = false;
       // Step the FSM
       const now = Date.now();
@@ -259,21 +272,40 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           cvd3m: cvd3m || 0,
           impulse,
         });
+        console.log('2) confirmed value:', JSON.stringify(fsm));
       }
+
+      const paperPos = getPaperPosition();
+
+      console.log('3) paperPos:', JSON.stringify(paperPos));
+
+      const exitSignal =
+        fsm.state === 'OPEN'
+          ? shouldExitPosition({
+              fsm,
+              signal,
+              cvd3m,
+              fundingRate: snap.fundingRate,
+              currentPrice: snap.price,
+              now,
+              entryPrice: paperPos?.entryPrice || 0,
+            })
+          : false;
 
       const { action } = fsmStep(fsm, {
         signal,
         confirmed,
+        exitSignal,
         now,
-        cvd3m,
-        fundingRate: snap.fundingRate,
-        currentPrice: snap.price,
       });
 
+      console.log('4) ACTION IS:', JSON.stringify(action));
       // =====================
       // Actions
       // =====================
+      const hasOpen = hasOpenPaperPosition();
       if (action === 'SETUP') {
+        console.log('4.1) ACTION IS:  SETUP');
         if (!state.lastAlertAt || now - state.lastAlertAt > ALERT_COOLDOWN) {
           onAlert(
             `⚠️ *${symbol}*\n` +
@@ -284,8 +316,9 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         }
       }
 
-      if (action === 'ENTER') {
-        fsm.entryPrice = snap.price;
+      if (action === 'ENTER' && !hasOpen) {
+        console.log('4.1) ACTION IS:  ENTER');
+        openPaperPosition(fsm.side!, snap.price, now);
         if (!state.lastConfirmationAt || now - state.lastConfirmationAt > CONFIRM_COOLDOWN) {
           onAlert(
             `${symbol}\n${fsm.side === 'LONG' ? '🟢 ENTER LONG' : '🔴 ENTER SHORT'}\n${entrySignal}`
@@ -293,9 +326,12 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           state.lastConfirmationAt = now;
         }
       }
-      if (action === 'EXIT') {
+      if (action === 'EXIT' && hasOpen) {
+        console.log('4.1) ACTION IS:  EXIT');
+        closePaperPosition(snap.price, now);
         onAlert(`⚪ EXIT ${fsm.side}`);
       }
+      console.log('==============================================');
     } catch (err) {
       console.error(`❌ Market watcher error (${symbol}):`, err);
     }
