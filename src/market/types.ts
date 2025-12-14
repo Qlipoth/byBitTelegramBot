@@ -29,3 +29,11 @@ export interface MarketState {
     [key: string]: any;
   };
 }
+export interface Delta {
+  priceChangePct: number;
+  volumeChangePct: number;
+}
+export interface ImpulseThresholds {
+  PRICE_SURGE_PCT: number;
+  VOLUME_SPIKE_PCT: number;
+}

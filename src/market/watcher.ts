@@ -14,13 +14,24 @@ import {
   ALERT_COOLDOWN,
   CONFIRM_COOLDOWN,
 } from './constants.market.js';
-import { calculateRSI, detectTrend, formatFundingRate, calculateEntryScores } from './utils.js';
+import {
+  calculateRSI,
+  detectTrend,
+  formatFundingRate,
+  calculateEntryScores,
+  getSignalAgreement,
+  confirmEntry,
+} from './utils.js';
+import { createFSM, fsmStep } from './fsm.js';
 import type { MarketState } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
 import { calcPercentChange, getCvdThreshold } from './candleBuilder.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
+
+// symbol -> FSM instance
+const tradeFSMBySymbol = new Map<string, ReturnType<typeof createFSM>>();
 
 function detectMarketPhase(delta30m: any): MarketState['phase'] {
   if (Math.abs(delta30m.priceChangePct) > 2 && delta30m.oiChangePct > 0) {
@@ -92,15 +103,13 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
 
-      let trendLabel = '📡 Сбор данных';
       const trendObj = {
         isBull: false,
         isBear: false,
       };
 
       if (has30m) {
-        const { label, isBull, isBear } = detectTrend({ ...delta30m, symbol });
-        trendLabel = label;
+        const { isBull, isBear } = detectTrend({ ...delta30m, symbol });
         trendObj.isBear = isBear;
         trendObj.isBull = isBull;
       }
@@ -117,7 +126,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       // CVD дивергенции и подтверждения
       const CVD_BULL_THRESHOLD = isPriorityCoin ? 20000 : 8000;
-      const CVD_BEAR_THRESHOLD = isPriorityCoin ? -20000 : -8000;
 
       // 1. УСИЛЕНИЕ НАКОПЛЕНИЯ через CVD
       if (state.phase === 'accumulation' && has30m) {
@@ -164,7 +172,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const { LONG } = SQUEEZE_THRESHOLDS;
       if (state.flags.failedAccumulation || state.flags.accumulationStrong) {
         if (cvd1m < -60_000 && delta.oiChangePct < -3) {
-          alerts.push('🔴 СКВИЗ ЛОНГОВ ПОДТВЕРЖДЁН CVD\n→ Агрессивные продажи выносят толпу');
+          alerts.push('🔴 СКВИЗ ЛОНГОВ ПОДТВЕРЖДЁН CVD');
         }
       } else if (
         state.flags.failedAccumulation &&
@@ -203,7 +211,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // =====================
       // Entry Score Calculation
       // =====================
-      const { entrySignal } = calculateEntryScores({
+      const { entrySignal, longScore, shortScore } = calculateEntryScores({
         state,
         delta,
         delta15m,
@@ -218,135 +226,76 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       });
 
       // =====================
-      // Entry Candidate (LONG / SHORT) — только при полном окне
+      // Signal Agreement Check
       // =====================
-      let entryCandidate: string | null = null;
-
-      if (has15m && has30m && state.phase === 'accumulation') {
-        // LONG candidate with CVD confirmation
-        if (
-          delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
-          delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
-          Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
-        ) {
-          if ((snap.fundingRate ?? 0) <= 0.0001 && cvd15m > CVD_BULL_THRESHOLD) {
-            state.flags.entryCandidate = 'LONG';
-            entryCandidate = '🟢 КАНДИДАТ НА ПОКУПКУ + CVD\n→ Скрытые покупки + накопление';
-          }
-        }
-
-        // SHORT candidate with CVD confirmation
-        if (
-          delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
-          delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
-          (snap.fundingRate ?? 0) > 0.0003 &&
-          delta30m.priceChangePct <= 0
-        ) {
-          if (cvd15m < CVD_BEAR_THRESHOLD) {
-            state.flags.entryCandidate = 'SHORT';
-            entryCandidate = '🔴 КАНДИДАТ НА ПРОДАЖУ + CVD\n→ Агрессивные продажи + перегрев';
-          }
-        }
-      }
+      const signal = getSignalAgreement({
+        longScore,
+        shortScore,
+        isRange: state.phase === 'range',
+        pricePercentChange,
+        moveThreshold,
+        cvd15m: cvd15m || 0,
+        cvdThreshold,
+        fundingRate: Number(snap.fundingRate || 0),
+      });
 
       // =====================
-      // ENTRY CONFIRMATION (1m trigger) with CVD
+      // FSM Integration
       // =====================
-      let entryConfirmation: string | null = null;
-
-      if (state.flags.entryCandidate === 'LONG') {
-        const bullImpulse =
-          delta.priceChangePct > impulse.PRICE_SURGE_PCT &&
-          delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
-          cvd3m > CVD_BULL_THRESHOLD;
-
-        if (bullImpulse) {
-          entryConfirmation = '🟢 ПОДТВЕРЖДЕНИЕ LONG\n→ Импульс + CVD > порога\n→ ВХОДИМ В ЛОНГ';
-          state.flags.lastEntrySide = 'LONG';
-        } else if (delta.priceChangePct > impulse.PRICE_SURGE_PCT && cvd3m < 0) {
-          alerts.push('⚠️ ЛОЖНЫЙ ПРОБОЙ ВВЕРХ\nЦена выросла, но CVD отрицательный — игнорируем');
-          entryConfirmation = null;
-        } else if (
-          delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
-          delta.oiChangePct >= 0 &&
-          rsi > 45
-        ) {
-          entryConfirmation =
-            '✅ ПОДТВЕРЖДЕНИЕ ПОКУПКИ 🟢\n→ Импульс 1м + объём\n→ Сигнал подтверждён локальным движением';
-        }
+      // Get or create FSM for this symbol
+      if (!tradeFSMBySymbol.has(symbol)) {
+        tradeFSMBySymbol.set(symbol, createFSM());
       }
-
-      if (state.flags.entryCandidate === 'SHORT') {
-        const bearImpulse =
-          delta.priceChangePct < -impulse.PRICE_SURGE_PCT &&
-          delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
-          cvd3m < CVD_BEAR_THRESHOLD;
-
-        if (bearImpulse) {
-          entryConfirmation =
-            '🔴 ПОДТВЕРЖДЕНИЕ SHORT\n→ Пробой вниз + CVD < порога\n→ ВХОДИМ В ШОРТ';
-          state.flags.lastEntrySide = 'SHORT';
-        } else if (delta.priceChangePct < -impulse.PRICE_SURGE_PCT && cvd3m > 0) {
-          alerts.push('⚠️ ЛОЖНЫЙ ПРОБОЙ ВНИЗ\nПадение на покупателях — ловушка');
-          entryConfirmation = null;
-        } else if (
-          delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
-          delta.oiChangePct >= 0 &&
-          (snap.fundingRate ?? 0) > 0
-        ) {
-          entryConfirmation =
-            '✅ ПОДТВЕРЖДЕНИЕ ПРОДАЖИ 🔴\n→ Пробой 1м + объём\n→ Лонги попали в ловушку';
-        }
-      }
-
-      // если нет ни структурных алертов, ни кандидата, ни конфирмации — молчим
-      if (!alerts.length && !entryCandidate && !entryConfirmation) return;
-
+      const fsm = tradeFSMBySymbol.get(symbol)!;
+      let confirmed = false;
+      // Step the FSM
       const now = Date.now();
-      // --- обычные алерты (accumulation, failed, funding) ---
-      if (alerts.length || entryCandidate) {
-        console.log('entryCandidate', entryCandidate);
-        if (now - state.lastAlertAt < ALERT_COOLDOWN) return;
-        state.lastAlertAt = now;
+
+      // Legacy confirmation check for backward compatibility
+      if (signal === 'LONG' || signal === 'SHORT') {
+        confirmed = confirmEntry({
+          signal,
+          delta,
+          cvd3m: cvd3m || 0,
+          impulse,
+        });
       }
 
-      // подтверждение входа — свой отдельный cooldown
-      if (entryConfirmation) {
-        console.log('entryConfirmation', entryConfirmation);
-        if (state.lastConfirmationAt && now - state.lastConfirmationAt < CONFIRM_COOLDOWN) {
-          entryConfirmation = null;
-        } else {
+      const { action } = fsmStep(fsm, {
+        signal,
+        confirmed,
+        now,
+        cvd3m,
+        fundingRate: snap.fundingRate,
+        currentPrice: snap.price,
+      });
+
+      // =====================
+      // Actions
+      // =====================
+      if (action === 'SETUP') {
+        if (!state.lastAlertAt || now - state.lastAlertAt > ALERT_COOLDOWN) {
+          onAlert(
+            `⚠️ *${symbol}*\n` +
+              `${fsm.side === 'LONG' ? '🟢 LONG SETUP' : '🔴 SHORT SETUP'}\n` +
+              `${entrySignal}`
+          );
+          state.lastAlertAt = now;
+        }
+      }
+
+      if (action === 'ENTER') {
+        fsm.entryPrice = snap.price;
+        if (!state.lastConfirmationAt || now - state.lastConfirmationAt > CONFIRM_COOLDOWN) {
+          onAlert(
+            `${symbol}\n${fsm.side === 'LONG' ? '🟢 ENTER LONG' : '🔴 ENTER SHORT'}\n${entrySignal}`
+          );
           state.lastConfirmationAt = now;
         }
       }
-
-      const structureBlock =
-        has15m && has30m
-          ? `
-📈 Structure:
-• 15m Δ Price: ${delta15m.priceChangePct.toFixed(2)}%
-• 15m Δ OI: ${delta15m.oiChangePct.toFixed(2)}%
-
-• 30m Δ Price: ${delta30m.priceChangePct.toFixed(2)}%
-• 30m Δ OI: ${delta30m.oiChangePct.toFixed(2)}%`
-          : `
-📈 Structure:
-• Сбор истории… нужно полное окно 30м`;
-      onAlert(
-        `⚠️ *${symbol}*
-Phase: ${state.phase.toUpperCase()}
-Trend: ${trendLabel}
-
-${alerts.join('\n\n')}
-${entryCandidate ? `${entryCandidate}\n` : ''}${entryConfirmation ? `${entryConfirmation}\n` : ''}
-${entrySignal}
-
-📊 1m Impulse:
-• Price: ${delta.priceChangePct.toFixed(2)}%
-• OI: ${delta.oiChangePct.toFixed(2)}%
-• Volume: ${delta.volumeChangePct.toFixed(2)}%
-• Funding: ${formatFundingRate(snap.fundingRate)}${structureBlock}`
-      );
+      if (action === 'EXIT') {
+        onAlert(`⚪ EXIT ${fsm.side}`);
+      }
     } catch (err) {
       console.error(`❌ Market watcher error (${symbol}):`, err);
     }

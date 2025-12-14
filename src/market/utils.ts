@@ -1,4 +1,5 @@
 import { getTrendThresholds, TREND_THRESHOLDS } from './constants.market.js';
+import type { Delta, ImpulseThresholds } from './types.js';
 
 interface EntryScores {
   longScore: number;
@@ -194,4 +195,84 @@ export function calculateEntryScores({
     shortScore,
     entrySignal,
   };
+}
+
+export function getSignalAgreement({
+  longScore,
+  shortScore,
+  isRange,
+  pricePercentChange,
+  moveThreshold,
+  cvd15m,
+  cvdThreshold,
+  fundingRate,
+}: {
+  longScore: number;
+  shortScore: number;
+  isRange: boolean;
+  pricePercentChange: number;
+  moveThreshold: number;
+  cvd15m: number;
+  cvdThreshold: number;
+  fundingRate: number;
+}) {
+  // ❌ Глобальные блокировки
+  if (isRange) return 'NONE';
+  if (Math.abs(pricePercentChange) < moveThreshold) return 'NONE';
+
+  // 🟢 LONG
+  if (
+    longScore >= 70 &&
+    longScore - shortScore >= 12 &&
+    cvd15m > cvdThreshold &&
+    fundingRate <= 0
+  ) {
+    return 'LONG';
+  }
+
+  // 🔴 SHORT
+  if (
+    shortScore >= 70 &&
+    shortScore - longScore >= 12 &&
+    cvd15m < -cvdThreshold &&
+    fundingRate >= 0
+  ) {
+    return 'SHORT';
+  }
+
+  return 'NONE';
+}
+
+export function confirmEntry({
+  signal,
+  delta,
+  cvd3m,
+  impulse,
+}: {
+  signal: 'LONG' | 'SHORT';
+  delta: Delta;
+  cvd3m: number;
+  impulse: ImpulseThresholds;
+}): boolean {
+  if (!delta || !impulse || cvd3m === undefined) {
+    return false;
+  }
+
+  if (signal === 'LONG') {
+    return (
+      delta.priceChangePct > impulse.PRICE_SURGE_PCT &&
+      delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
+      cvd3m > 0
+    );
+  }
+
+  if (signal === 'SHORT') {
+    return (
+      delta.priceChangePct < -impulse.PRICE_SURGE_PCT &&
+      delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
+      cvd3m < 0
+    );
+  }
+
+  return false;
 }
