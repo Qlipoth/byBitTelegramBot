@@ -21,6 +21,7 @@ import {
   calculateEntryScores,
   getSignalAgreement,
   confirmEntry,
+  detectMarketPhase,
 } from './utils.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState } from './types.js';
@@ -38,16 +39,6 @@ const stateBySymbol = new Map<string, MarketState>();
 
 // symbol -> FSM instance
 const tradeFSMBySymbol = new Map<string, ReturnType<typeof createFSM>>();
-
-function detectMarketPhase(delta30m: any): MarketState['phase'] {
-  if (Math.abs(delta30m.priceChangePct) > 2 && delta30m.oiChangePct > 0) {
-    return 'trend';
-  }
-  if (delta30m.oiChangePct > 4 && Math.abs(delta30m.priceChangePct) < 1) {
-    return 'accumulation';
-  }
-  return 'range';
-}
 
 // =====================
 // Initialize watchers
@@ -101,7 +92,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const has15m = snaps15m.length >= 15;
       const has30m = snaps30m.length >= 30;
 
-      if (snaps15m.length < 5 || snaps30m.length < 5) return;
+      if (snaps.length < 5) return;
 
       const delta15m = compareSnapshots(snap, snaps15m[0]!);
       const delta30m = compareSnapshots(snap, snaps30m[0]!);
@@ -137,7 +128,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       if (state.phase === 'accumulation' && has30m) {
         if (cvd15m > CVD_BULL_THRESHOLD && delta30m.oiChangePct > 2) {
           alerts.push('CVD ПОДТВЕРЖДАЕТ НАКОПЛЕНИЕ\nАгрессивные покупки на просадке');
-          state.flags.accumulationStrong = true;
         }
       }
 
@@ -152,7 +142,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
         Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
       ) {
-        state.flags.accumulation ??= Date.now();
         alerts.push('🧠 Накопление OI (30м)\n→ Идёт накопление позиций\n→ Ожидаем пробой 1м');
       }
 
@@ -165,10 +154,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         state.flags.accumulation &&
         Date.now() - state.flags.accumulation > 15 * 60_000 &&
         delta.priceChangePct < -impulse.PRICE_DROP_PCT * 1.5 &&
-        delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
         snap.fundingRate > FUNDING_RATE_THRESHOLDS.FAILED_ACCUMULATION
       ) {
-        state.flags.failedAccumulation = Date.now();
         alerts.push('💥 Накопление ПРОВАЛЕНО\n→ Высокий риск для ЛОНГОВ\n→ Ожидаем пробой');
       }
 
@@ -183,7 +170,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       } else if (
         state.flags.failedAccumulation &&
         delta.priceChangePct < LONG.PRICE_CHANGE &&
-        delta.volumeChangePct > LONG.VOLUME_CHANGE &&
         delta.oiChangePct < LONG.OI_CHANGE &&
         rsi > LONG.RSI_OVERBOUGHT
       ) {
@@ -239,7 +225,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const signal = getSignalAgreement({
         longScore,
         shortScore,
-        isRange: state.phase === 'range',
+        phase: state.phase,
         pricePercentChange,
         moveThreshold,
         cvd15m: cvd15m || 0,

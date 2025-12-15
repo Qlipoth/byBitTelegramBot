@@ -1,11 +1,12 @@
 import { getTrendThresholds, TREND_THRESHOLDS } from './constants.market.js';
-import type { Delta, ImpulseThresholds } from './types.js';
-
-interface EntryScores {
-  longScore: number;
-  shortScore: number;
-  entrySignal: string;
-}
+import type {
+  ConfirmEntryParams,
+  EntryScores,
+  EntryScoresParams,
+  MarketDelta,
+  MarketPhase,
+  SignalAgreementParams,
+} from './types.js';
 
 // =====================
 // Trend detection (STRUCTURE, not impulse)
@@ -114,80 +115,81 @@ export function calculateEntryScores({
   impulse,
   isBull,
   isBear,
-}: {
-  state: any;
-  delta: any;
-  delta15m: any;
-  delta30m: any;
-  snap: any;
-  cvd3m: number;
-  cvd15m: number;
-  rsi: number;
-
-  impulse: any;
-  isBull: boolean;
-  isBear: boolean;
-}): EntryScores {
+}: EntryScoresParams): EntryScores {
   let longScore = 0;
   let shortScore = 0;
 
-  // 1. Market phase (reduced weight)
-  if (state.phase === 'accumulation') longScore += 10;
-  if (state.phase === 'distribution') shortScore += 10;
+  /* =====================
+   1️⃣ Phase (max 15)
+  ===================== */
+  if (state.phase === 'accumulation') longScore += 15;
+  if (state.phase === 'range') {
+    longScore += 5;
+    shortScore += 5;
+  }
 
-  if (state.flags?.accumulationStrong) longScore += 5;
-  if (state.flags?.distributionStrong) shortScore += 5;
+  /* =====================
+   2️⃣ OI dynamics (max 25)
+   ===================== */
+  const oi30 = delta30m?.oiChangePct ?? 0;
+  const oi15 = delta15m?.oiChangePct ?? 0;
 
-  // 2. OI dynamics (logarithmic)
-  const oi30 = delta30m?.oiChangePct || 0;
-  const oi15 = delta15m?.oiChangePct || 0;
+  const oiLong = Math.log1p(Math.max(oi30, 0)) * 10 + Math.log1p(Math.max(oi15, 0)) * 5;
 
-  longScore += Math.min(Math.log1p(Math.max(oi30, 0)) * 8, 15);
-  longScore += Math.min(Math.log1p(Math.max(oi15, 0)) * 6, 12);
-  shortScore += Math.min(Math.log1p(Math.max(-oi30, 0)) * 8, 15);
-  shortScore += Math.min(Math.log1p(Math.max(-oi15, 0)) * 6, 12);
+  const oiShort = Math.log1p(Math.max(-oi30, 0)) * 10 + Math.log1p(Math.max(-oi15, 0)) * 5;
 
-  // 3. Funding (contrarian)
-  if ((snap.fundingRate ?? 0) < 0) longScore += 6;
-  if ((snap.fundingRate ?? 0) > 0) shortScore += 6;
+  longScore += Math.min(oiLong, 25);
+  shortScore += Math.min(oiShort, 25);
 
-  // 4. CVD strength (normalized)
-  const cvdNorm15 = Math.sign(cvd15m) * Math.min(Math.abs(cvd15m) / 20000, 1);
-  const cvdNorm3 = Math.sign(cvd3m) * Math.min(Math.abs(cvd3m) / 10000, 1);
+  /* =====================
+   3️⃣ Funding (max 10, contrarian)
+   ===================== */
+  if ((snap.fundingRate ?? 0) < 0) longScore += 10;
+  if ((snap.fundingRate ?? 0) > 0) shortScore += 10;
 
-  longScore += Math.max(cvdNorm15 * 15, 0);
-  longScore += Math.max(cvdNorm3 * 8, 0);
-  shortScore += Math.max(-cvdNorm15 * 15, 0);
-  shortScore += Math.max(-cvdNorm3 * 8, 0);
+  /* =====================
+   4️⃣ CVD strength (max 25)
+   ===================== */
+  const cvd15Norm = Math.min(Math.abs(cvd15m) / 20000, 1);
+  const cvd3Norm = Math.min(Math.abs(cvd3m) / 10000, 1);
 
-  // 5. 1m impulse
-  if (delta?.priceChangePct > impulse?.PRICE_SURGE_PCT) longScore += 10;
-  if (delta?.priceChangePct < -(impulse?.PRICE_SURGE_PCT || 0)) shortScore += 10;
+  if (cvd15m > 0) longScore += cvd15Norm * 15;
+  if (cvd15m < 0) shortScore += cvd15Norm * 15;
 
-  if (delta?.volumeChangePct > impulse?.VOLUME_SPIKE_PCT) longScore += 8;
-  if (delta?.volumeChangePct < -(impulse?.VOLUME_SPIKE_PCT || 0)) shortScore += 8;
+  if (cvd3m > 0) longScore += cvd3Norm * 10;
+  if (cvd3m < 0) shortScore += cvd3Norm * 10;
 
-  if ((delta?.oiChangePct || 0) > 0) longScore += 5;
-  if ((delta?.oiChangePct || 0) < 0) shortScore += 5;
+  /* =====================
+   5️⃣ 1m impulse (max 15)
+   ===================== */
+  if (delta?.priceChangePct > impulse.PRICE_SURGE_PCT) longScore += 15;
+  if (delta?.priceChangePct < -impulse.PRICE_SURGE_PCT) shortScore += 15;
 
-  // 6. RSI (clear zones)
-  if (rsi > 55) longScore += 8;
-  if (rsi < 45) shortScore += 8;
+  /* =====================
+   6️⃣ RSI (max 10)
+   ===================== */
+  if (rsi > 55) longScore += 10;
+  if (rsi < 45) shortScore += 10;
 
-  // 7. Trend strength
-  if (isBull) longScore += 12;
-  if (isBear) shortScore += 12;
+  /* =====================
+   7️⃣ Soft trend bonus (max 5)
+   ===================== */
+  if (isBull) longScore += 5;
+  if (isBear) shortScore += 5;
 
-  // Final normalization
-  longScore = Math.min(100, Math.max(0, longScore));
-  shortScore = Math.min(100, Math.max(0, shortScore));
+  // Clamp
+  longScore = Math.min(100, Math.round(longScore));
+  shortScore = Math.min(100, Math.round(shortScore));
 
-  let entrySignal = `⚪ Нет четкого тренда (LONG ${Math.round(longScore)}/100 vs SHORT ${Math.round(shortScore)}/100)`;
+  /* =====================
+   🎯 Signal decision
+   ===================== */
+  let entrySignal = `⚪ Нет сетапа (LONG ${longScore}/100 vs SHORT ${shortScore}/100)`;
 
-  if (longScore >= 70 && longScore - shortScore >= 12) {
-    entrySignal = `🟢 Сильный LONG (${Math.round(longScore)}/100)`;
-  } else if (shortScore >= 70 && shortScore - longScore >= 12) {
-    entrySignal = `🔴 Сильный SHORT (${Math.round(shortScore)}/100)`;
+  if (longScore >= 65 && longScore - shortScore >= 10) {
+    entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
+  } else if (shortScore >= 65 && shortScore - longScore >= 10) {
+    entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
   }
 
   return {
@@ -200,24 +202,15 @@ export function calculateEntryScores({
 export function getSignalAgreement({
   longScore,
   shortScore,
-  isRange,
+  phase,
   pricePercentChange,
   moveThreshold,
   cvd15m,
   cvdThreshold,
   fundingRate,
-}: {
-  longScore: number;
-  shortScore: number;
-  isRange: boolean;
-  pricePercentChange: number;
-  moveThreshold: number;
-  cvd15m: number;
-  cvdThreshold: number;
-  fundingRate: number;
-}) {
+}: SignalAgreementParams) {
   // ❌ Глобальные блокировки
-  if (isRange) return 'NONE';
+  if (phase === 'range') return 'NONE';
   if (Math.abs(pricePercentChange) < moveThreshold) return 'NONE';
 
   // 🟢 LONG
@@ -243,36 +236,34 @@ export function getSignalAgreement({
   return 'NONE';
 }
 
-export function confirmEntry({
-  signal,
-  delta,
-  cvd3m,
-  impulse,
-}: {
-  signal: 'LONG' | 'SHORT';
-  delta: Delta;
-  cvd3m: number;
-  impulse: ImpulseThresholds;
-}): boolean {
+export function confirmEntry({ signal, delta, cvd3m, impulse }: ConfirmEntryParams): boolean {
   if (!delta || !impulse || cvd3m === undefined) {
     return false;
   }
-
   if (signal === 'LONG') {
-    return (
-      delta.priceChangePct > impulse.PRICE_SURGE_PCT &&
-      delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
-      cvd3m > 0
-    );
+    return delta.priceChangePct > impulse.PRICE_SURGE_PCT && cvd3m > 0;
   }
-
   if (signal === 'SHORT') {
-    return (
-      delta.priceChangePct < -impulse.PRICE_SURGE_PCT &&
-      delta.volumeChangePct > impulse.VOLUME_SPIKE_PCT &&
-      cvd3m < 0
-    );
+    return delta.priceChangePct < -impulse.PRICE_SURGE_PCT && cvd3m < 0;
+  }
+  return false;
+}
+
+export function detectMarketPhase(delta30m: MarketDelta): MarketPhase {
+  // тренд
+  if (Math.abs(delta30m.priceChangePct) > 2 && delta30m.oiChangePct > 0) {
+    return 'trend';
   }
 
-  return false;
+  // накопление (лонги)
+  if (delta30m.oiChangePct > 4 && delta30m.priceChangePct > -1 && delta30m.priceChangePct < 1) {
+    return 'accumulation';
+  }
+
+  // распределение (шорты)
+  if (delta30m.oiChangePct < -4 && delta30m.priceChangePct > -1 && delta30m.priceChangePct < 1) {
+    return 'distribution';
+  }
+
+  return 'range';
 }

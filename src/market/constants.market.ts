@@ -199,11 +199,18 @@ export const FUNDING_RATE_THRESHOLDS = {
   EXTREME: 0.03, // 0.03% per 8h
 } as const;
 
-export const COINS_COUNT = 30;
+export const COINS_COUNT = 7;
 
 export const STRUCTURE_WINDOW = 15;
 
 // These coins will always be included in the top liquid coins
-export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'] as const;
+export const PRIORITY_COINS = [
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'XRPUSDT',
+  'FOLKSUSDT',
+  'ZECUSDT',
+] as const;
 export const ALERT_COOLDOWN = 10 * 60 * 1000;
 export const CONFIRM_COOLDOWN = 2 * 60_000;
