@@ -120,77 +120,101 @@ export function calculateEntryScores({
   let longScore = 0;
   let shortScore = 0;
 
+  // Объект для отладки (поможет понять, почему Score именно такой)
+  const details = { phase: 0, oi: 0, funding: 0, cvd: 0, impulse: 0, rsi: 0, trend: 0 };
+
   /* =====================
    1️⃣ Phase (max 15)
   ===================== */
-  if (state.phase === 'accumulation') longScore += 15;
-  if (state.phase === 'range') {
-    longScore += 5;
-    shortScore += 5;
+  // Убираем бонус за Range. Range — это отсутствие сетапа.
+  if (state.phase === 'accumulation') {
+    longScore += 15;
+    details.phase = 15;
+  } else if (state.phase === 'distribution') {
+    shortScore += 15;
+    details.phase = 15;
   }
 
   /* =====================
    2️⃣ OI dynamics (max 25)
-   ===================== */
+  ===================== */
   const oi30 = delta30m?.oiChangePct ?? 0;
   const oi15 = delta15m?.oiChangePct ?? 0;
 
-  const oiLong = Math.log1p(Math.max(oi30, 0)) * 10 + Math.log1p(Math.max(oi15, 0)) * 5;
+  // ФИКС "Начала сессии": Если данных за 30м еще мало, не дублируем веса
+  const isDataMature = (delta30m?.minutesAgo ?? 0) >= 15;
 
-  const oiShort = Math.log1p(Math.max(-oi30, 0)) * 10 + Math.log1p(Math.max(-oi15, 0)) * 5;
+  // Используем log1p, но с поправкой на зрелость данных
+  const oiLong =
+    (isDataMature ? Math.log1p(Math.max(oi30, 0)) * 10 : 0) + Math.log1p(Math.max(oi15, 0)) * 10; // Увеличил вес 15м, если 30м еще нет
+
+  const oiShort =
+    (isDataMature ? Math.log1p(Math.max(-oi30, 0)) * 10 : 0) + Math.log1p(Math.max(-oi15, 0)) * 10;
 
   longScore += Math.min(oiLong, 25);
   shortScore += Math.min(oiShort, 25);
+  details.oi = Math.round(Math.max(oiLong, oiShort));
 
   /* =====================
    3️⃣ Funding (max 10, contrarian)
-   ===================== */
-  if ((snap.fundingRate ?? 0) < 0) longScore += 10;
-  if ((snap.fundingRate ?? 0) > 0) shortScore += 10;
+  ===================== */
+  const fRate = snap.fundingRate ?? 0;
+  if (fRate < -0.0001) {
+    longScore += 10;
+    details.funding = 10;
+  } // Отрицательный фандинг - топливо для Лонга
+  if (fRate > 0.0001) {
+    shortScore += 10;
+    details.funding = 10;
+  } // Положительный - для Шорта
 
   /* =====================
    4️⃣ CVD strength (max 25)
-   ===================== */
-  const cvd15Norm = Math.min(Math.abs(cvd15m) / 20000, 1);
-  const cvd3Norm = Math.min(Math.abs(cvd3m) / 10000, 1);
+  ===================== */
+  // Адаптируем под твой новый MIN_CVD_THRESHOLD: 1500
+  // Теперь CVD 5000-7000 будет давать почти полный балл, а 1500 — начальный толчок
+  const cvd15Norm = Math.min(Math.abs(cvd15m) / 7000, 1);
+  const cvd3Norm = Math.min(Math.abs(cvd3m) / 3000, 1);
 
   if (cvd15m > 0) longScore += cvd15Norm * 15;
   if (cvd15m < 0) shortScore += cvd15Norm * 15;
 
   if (cvd3m > 0) longScore += cvd3Norm * 10;
   if (cvd3m < 0) shortScore += cvd3Norm * 10;
+  details.cvd = Math.round(cvd15Norm * 15 + cvd3Norm * 10);
 
   /* =====================
-   5️⃣ 1m impulse (max 15)
-   ===================== */
-  const has1mConfirmationLong = delta?.priceChangePct > impulse.PRICE_SURGE_PCT;
-  const has1mConfirmationShort = delta?.priceChangePct < -impulse.PRICE_SURGE_PCT;
-  // 5-minute confirmation (5 points)
-  const has5mConfirmationLong = delta5m?.priceChangePct > impulse.PRICE_SURGE_PCT * 0.7;
-  const has5mConfirmationShort = delta5m?.priceChangePct < -impulse.PRICE_SURGE_PCT * 0.7;
+   5️⃣ Impulse & Velocity (max 15)
+  ===================== */
+  const price1m = delta?.priceChangePct ?? 0;
+  const price5m = delta5m?.priceChangePct ?? 0;
 
-  // Score calculation
-  if (has1mConfirmationLong) {
-    longScore += 10;
-    if (has5mConfirmationLong) longScore += 5;
-  }
+  // 1m Impulse
+  if (price1m > impulse.PRICE_SURGE_PCT) longScore += 7;
+  if (price1m < -impulse.PRICE_SURGE_PCT) shortScore += 7;
 
-  if (has1mConfirmationShort) {
-    shortScore += 10;
-    if (has5mConfirmationShort) shortScore += 5;
-  }
+  // Velocity: Если 5-минутка — это взрыв (большая часть 15-минутки произошла за 5 минут)
+  const isVelocityLong = price5m > 0 && price5m > (delta15m?.priceChangePct ?? 0) * 0.7;
+  const isVelocityShort = price5m < 0 && price5m < (delta15m?.priceChangePct ?? 0) * 0.7;
+
+  if (isVelocityLong) longScore += 8;
+  if (isVelocityShort) shortScore += 8;
+  details.impulse = isVelocityLong || isVelocityShort ? 15 : 7;
 
   /* =====================
    6️⃣ RSI (max 10)
-   ===================== */
-  if (rsi > 55) longScore += 10;
-  if (rsi < 45) shortScore += 10;
+  ===================== */
+  // Сделал зоны чуть более строгими (60/40 вместо 55/45)
+  if (rsi >= 60) longScore += 10;
+  if (rsi <= 40) shortScore += 10;
+  details.rsi = rsi >= 60 || rsi <= 40 ? 10 : 0;
 
   /* =====================
    7️⃣ Soft trend bonus (max 5)
-   ===================== */
+  ===================== */
   if (isBull) longScore += 5;
   if (isBear) shortScore += 5;
+  details.trend = 5;
 
   // Clamp
   longScore = Math.min(100, Math.round(longScore));
@@ -198,12 +222,13 @@ export function calculateEntryScores({
 
   /* =====================
    🎯 Signal decision
-   ===================== */
-  let entrySignal = `⚪ Нет сетапа (LONG ${longScore}/100 vs SHORT ${shortScore}/100)`;
+  ===================== */
+  // Порог 65 — хорошо, но добавим проверку на минимальный перевес
+  let entrySignal = `⚪ Нет сетапа (L:${longScore} S:${shortScore})`;
 
-  if (longScore >= 65 && longScore - shortScore >= 10) {
+  if (longScore >= 65 && longScore > shortScore + 15) {
     entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
-  } else if (shortScore >= 65 && shortScore - longScore >= 10) {
+  } else if (shortScore >= 65 && shortScore > longScore + 15) {
     entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
   }
 
@@ -211,6 +236,8 @@ export function calculateEntryScores({
     longScore,
     shortScore,
     entrySignal,
+    // Рекомендую добавить это в возвращаемый объект для логов
+    // debug: details
   };
 }
 

@@ -148,8 +148,8 @@ export function calcPercentChange(symbol: string) {
 // Константы для настройки
 const CONFIG = {
   MIN_ATR_PCT: 0.2, // Минимальная волатильность
-  MIN_MOVE_THRESHOLD: 1.0, // Минимальный порог движения (%)
-  MIN_CVD_THRESHOLD: 5000, // Минимальный порог CVD
+  MIN_MOVE_THRESHOLD: 0.4, // Минимальный порог движения (%)
+  MIN_CVD_THRESHOLD: 1500, // Минимальный порог CVD
   ATR_MULTIPLIER: 2, // Множитель для порога движения
   CVD_MULTIPLIER: 1500, // Множитель для порога CVD
 } as const;
