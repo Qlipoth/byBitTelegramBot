@@ -2,6 +2,8 @@
    GLOBAL GUARDS & SHUTDOWN
    =============================== */
 
+import * as fs from 'node:fs';
+
 let isShuttingDown = false;
 let stopWatchers: (() => void) | null = null;
 
@@ -52,12 +54,12 @@ process.on('unhandledRejection', reason => {
    IMPORTS & ENV
    =============================== */
 
-import { Bot, Keyboard } from 'grammy';
+import { Bot, InputFile, Keyboard } from 'grammy';
 import * as dotenv from 'dotenv';
 
 import { getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
 import { initializeMarketWatcher } from '../market/watcher.js';
-import { COINS_COUNT } from '../market/constants.market.js';
+import { COINS_COUNT, LOG_PATH } from '../market/constants.market.js';
 
 dotenv.config();
 
@@ -85,6 +87,7 @@ const mainKeyboard = new Keyboard()
   .row()
   .text('/status')
   .text('/stop')
+  .text('/download_logs')
   .resized();
 
 /* ===============================
@@ -129,6 +132,15 @@ bot.command('start', async ctx => {
     parse_mode: 'Markdown',
     reply_markup: mainKeyboard,
   });
+});
+
+bot.command('download_logs', async ctx => {
+  try {
+    await ctx.replyWithDocument(new InputFile(fs.createReadStream(LOG_PATH), 'bot.log'));
+  } catch (error) {
+    console.error('Error sending log file:', error);
+    await ctx.reply('❌ Error sending log file');
+  }
 });
 
 bot.command('stop', async ctx => {

@@ -214,3 +214,4 @@ export const PRIORITY_COINS = [
 ] as const;
 export const ALERT_COOLDOWN = 10 * 60 * 1000;
 export const CONFIRM_COOLDOWN = 2 * 60_000;
+export const LOG_PATH = '/tmp/bot.log';

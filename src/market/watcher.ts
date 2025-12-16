@@ -33,6 +33,7 @@ import {
   hasOpenPaperPosition,
   openPaperPosition,
 } from './paperPositionManager.js';
+import { logEvent } from './logger.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -70,11 +71,21 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
   return setInterval(async () => {
     try {
+      const logData: Record<string, any> = {};
       const cvd1m = getCVDLastMinutes(symbol, 1);
       const cvd3m = getCVDLastMinutes(symbol, 3);
       const cvd15m = getCVDLastMinutes(symbol, 15);
       const snap = await getMarketSnapshot(symbol);
       saveSnapshot(snap);
+      logData.cvd = {
+        cvd1m,
+        cvd3m,
+        cvd15m,
+        symbol,
+        ts: snap.timestamp,
+        price: snap.price,
+        type: 'snapshot',
+      };
 
       const snaps = getSnapshots(symbol);
       if (snaps.length < 5) return;
@@ -99,6 +110,12 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const delta30m = compareSnapshots(snap, snaps30m[0]!);
       const delta5m = compareSnapshots(snap, snaps5m[0]!);
 
+      logData.delta = {
+        delta15m,
+        delta30m,
+        delta5m,
+      };
+
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
 
@@ -120,6 +137,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       }
 
       state.phase = has30m ? detectMarketPhase(delta30m) : 'range';
+
+      logData.phase = state.phase;
 
       const alerts: string[] = [];
 
@@ -184,6 +203,9 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       const pricePercentChange = calcPercentChange(symbol);
       const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+      logData.pricePercentChange = pricePercentChange;
+
+      logData.thresholds = { cvdThreshold, moveThreshold };
       if (Math.abs(pricePercentChange) > moveThreshold) {
         // Bearish Divergence: Price up but CVD down
         if (pricePercentChange > 0 && cvd15m < -cvdThreshold) {
@@ -194,6 +216,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           alerts.push('🟢 БЫЧЬЯ ДИВЕРГЕНЦИЯ\nПадение на сильных покупках — разворот вверх');
         }
       }
+
+      logData.fundingRate = snap.fundingRate;
 
       // =====================
       // Funding extremes
@@ -220,6 +244,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         impulse: isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS,
       });
 
+      logData.scores = { longScore, shortScore };
+
       console.log(`${symbol}: `, '0) entrySignal:', entrySignal);
 
       // =====================
@@ -236,6 +262,8 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         fundingRate: Number(snap.fundingRate || 0),
       });
 
+      logData.signal = signal;
+
       console.log('==============================================');
       console.log('0.1) signal is:', signal);
 
@@ -247,6 +275,13 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         tradeFSMBySymbol.set(symbol, createFSM());
       }
       const fsm = tradeFSMBySymbol.get(symbol)!;
+
+      logData.fsm = {
+        state: fsm.state,
+        side: fsm.side,
+      };
+
+      logEvent(logData);
 
       console.log('1) FSM:', JSON.stringify(fsm));
       let confirmed = false;
