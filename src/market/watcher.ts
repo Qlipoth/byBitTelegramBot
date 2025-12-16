@@ -86,6 +86,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // Окна для структуры
       const snaps15m = snaps.slice(-15);
       const snaps30m = snaps.slice(-30);
+      const snaps5m = snaps.slice(-5);
 
       // Проверяем, что действительно есть 15/30 минут истории,
       // а не 3–5 минут после рестарта.
@@ -96,6 +97,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       const delta15m = compareSnapshots(snap, snaps15m[0]!);
       const delta30m = compareSnapshots(snap, snaps30m[0]!);
+      const delta5m = compareSnapshots(snap, snaps5m[0]!);
 
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
@@ -208,6 +210,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         delta,
         delta15m,
         delta30m,
+        delta5m,
         snap,
         cvd3m: cvd3m || 0,
         cvd15m: cvd15m || 0,

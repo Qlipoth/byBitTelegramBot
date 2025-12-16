@@ -59,6 +59,7 @@ export interface EntryScoresParams {
   delta: MarketDelta;
   delta15m: MarketDelta;
   delta30m: MarketDelta;
+  delta5m: MarketDelta;
   snap: MarketSnapshot;
   cvd3m: number;
   cvd15m: number;

@@ -108,6 +108,7 @@ export function calculateEntryScores({
   delta,
   delta15m,
   delta30m,
+  delta5m,
   snap,
   cvd3m,
   cvd15m,
@@ -162,8 +163,22 @@ export function calculateEntryScores({
   /* =====================
    5️⃣ 1m impulse (max 15)
    ===================== */
-  if (delta?.priceChangePct > impulse.PRICE_SURGE_PCT) longScore += 15;
-  if (delta?.priceChangePct < -impulse.PRICE_SURGE_PCT) shortScore += 15;
+  const has1mConfirmationLong = delta?.priceChangePct > impulse.PRICE_SURGE_PCT;
+  const has1mConfirmationShort = delta?.priceChangePct < -impulse.PRICE_SURGE_PCT;
+  // 5-minute confirmation (5 points)
+  const has5mConfirmationLong = delta5m?.priceChangePct > impulse.PRICE_SURGE_PCT * 0.7;
+  const has5mConfirmationShort = delta5m?.priceChangePct < -impulse.PRICE_SURGE_PCT * 0.7;
+
+  // Score calculation
+  if (has1mConfirmationLong) {
+    longScore += 10;
+    if (has5mConfirmationLong) longScore += 5;
+  }
+
+  if (has1mConfirmationShort) {
+    shortScore += 10;
+    if (has5mConfirmationShort) shortScore += 5;
+  }
 
   /* =====================
    6️⃣ RSI (max 10)
@@ -215,8 +230,8 @@ export function getSignalAgreement({
 
   // 🟢 LONG
   if (
-    longScore >= 70 &&
-    longScore - shortScore >= 12 &&
+    longScore >= 65 &&
+    longScore - shortScore >= 10 &&
     cvd15m > cvdThreshold &&
     fundingRate <= 0
   ) {
@@ -225,8 +240,8 @@ export function getSignalAgreement({
 
   // 🔴 SHORT
   if (
-    shortScore >= 70 &&
-    shortScore - longScore >= 12 &&
+    shortScore >= 65 &&
+    shortScore - longScore >= 10 &&
     cvd15m < -cvdThreshold &&
     fundingRate >= 0
   ) {
@@ -250,20 +265,13 @@ export function confirmEntry({ signal, delta, cvd3m, impulse }: ConfirmEntryPara
 }
 
 export function detectMarketPhase(delta30m: MarketDelta): MarketPhase {
-  // тренд
-  if (Math.abs(delta30m.priceChangePct) > 2 && delta30m.oiChangePct > 0) {
-    return 'trend';
-  }
+  const price = delta30m.priceChangePct;
+  const oi = delta30m.oiChangePct;
 
-  // накопление (лонги)
-  if (delta30m.oiChangePct > 4 && delta30m.priceChangePct > -1 && delta30m.priceChangePct < 1) {
-    return 'accumulation';
-  }
+  if (oi > 2 && Math.abs(price) < 1.8) return 'accumulation';
+  if (oi < -2 && Math.abs(price) < 1.8) return 'distribution';
 
-  // распределение (шорты)
-  if (delta30m.oiChangePct < -4 && delta30m.priceChangePct > -1 && delta30m.priceChangePct < 1) {
-    return 'distribution';
-  }
+  if (Math.abs(price) > 2.2 && Math.abs(oi) > 1) return 'trend';
 
   return 'range';
 }
