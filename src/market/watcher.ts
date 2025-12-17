@@ -5,26 +5,22 @@ import {
   INTERVALS,
   PRIORITY_COINS,
   COINS_COUNT,
-  FUNDING_RATE_THRESHOLDS,
-  SQUEEZE_THRESHOLDS,
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
   BASE_STRUCTURE_THRESHOLDS,
   LIQUID_STRUCTURE_THRESHOLDS,
-  ALERT_COOLDOWN,
-  CONFIRM_COOLDOWN,
 } from './constants.market.js';
 import {
   calculateRSI,
   detectTrend,
-  formatFundingRate,
   calculateEntryScores,
   getSignalAgreement,
   confirmEntry,
   detectMarketPhase,
+  selectCoinThresholds,
 } from './utils.js';
-import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
-import type { MarketState } from './types.js';
+import { createFSM, EXIT_THRESHOLDS, fsmStep, shouldExitPosition } from './fsm.js';
+import type { MarketState, SymbolValue } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
 import { calcPercentChange, getCvdThreshold } from './candleBuilder.js';
 import {
@@ -75,6 +71,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       const cvd1m = getCVDLastMinutes(symbol, 1);
       const cvd3m = getCVDLastMinutes(symbol, 3);
       const cvd15m = getCVDLastMinutes(symbol, 15);
+      const cvd30m = getCVDLastMinutes(symbol, 30);
       const snap = await getMarketSnapshot(symbol);
       saveSnapshot(snap);
       logData.cvd = {
@@ -101,7 +98,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
 
       // Проверяем, что действительно есть 15/30 минут истории,
       // а не 3–5 минут после рестарта.
-      const has15m = snaps15m.length >= 15;
       const has30m = snaps30m.length >= 30;
 
       if (snaps.length < 5) return;
@@ -136,95 +132,26 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
         stateBySymbol.set(symbol, state);
       }
 
-      state.phase = has30m ? detectMarketPhase(delta30m) : 'range';
-
-      logData.phase = state.phase;
-
-      const alerts: string[] = [];
-
-      // CVD дивергенции и подтверждения
-      const CVD_BULL_THRESHOLD = isPriorityCoin ? 20000 : 8000;
-
-      // 1. УСИЛЕНИЕ НАКОПЛЕНИЯ через CVD
-      if (state.phase === 'accumulation' && has30m) {
-        if (cvd15m > CVD_BULL_THRESHOLD && delta30m.oiChangePct > 2) {
-          alerts.push('CVD ПОДТВЕРЖДАЕТ НАКОПЛЕНИЕ\nАгрессивные покупки на просадке');
-        }
-      }
-
-      // =====================
-      // Accumulation (structure)
-      // =====================
-      if (
-        has15m &&
-        has30m &&
-        state.phase === 'accumulation' &&
-        delta15m.oiChangePct > structure.OI_INCREASE_PCT &&
-        delta30m.oiChangePct > structure.OI_INCREASE_PCT &&
-        Math.abs(delta30m.priceChangePct) < structure.PRICE_DROP_PCT
-      ) {
-        alerts.push('🧠 Накопление OI (30м)\n→ Идёт накопление позиций\n→ Ожидаем пробой 1м');
-      }
-
-      // =====================
-      // Failed accumulation → squeeze start
-      // =====================
-      if (
-        has15m &&
-        has30m &&
-        state.flags.accumulation &&
-        Date.now() - state.flags.accumulation > 15 * 60_000 &&
-        delta.priceChangePct < -impulse.PRICE_DROP_PCT * 1.5 &&
-        snap.fundingRate > FUNDING_RATE_THRESHOLDS.FAILED_ACCUMULATION
-      ) {
-        alerts.push('💥 Накопление ПРОВАЛЕНО\n→ Высокий риск для ЛОНГОВ\n→ Ожидаем пробой');
-      }
-
-      // =====================
-      // Long squeeze confirmation with CVD
-      // =====================
-      const { LONG } = SQUEEZE_THRESHOLDS;
-      if (state.flags.failedAccumulation || state.flags.accumulationStrong) {
-        if (cvd1m < -60_000 && delta.oiChangePct < -3) {
-          alerts.push('🔴 СКВИЗ ЛОНГОВ ПОДТВЕРЖДЁН CVD');
-        }
-      } else if (
-        state.flags.failedAccumulation &&
-        delta.priceChangePct < LONG.PRICE_CHANGE &&
-        delta.oiChangePct < LONG.OI_CHANGE &&
-        rsi > LONG.RSI_OVERBOUGHT
-      ) {
-        alerts.push('🔴 ПОДТВЕРЖДЁН СКВИЗ ЛОНГОВ\n→ Вероятно продолжение');
-      }
-
-      // =====================
-      // CVD Divergence Detection
-      // =====================
-
       const pricePercentChange = calcPercentChange(symbol);
       const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+
+      state.phase = has30m
+        ? detectMarketPhase({
+            delta30m,
+            delta15m,
+            cvd30m,
+            settings: {
+              moveThreshold,
+              cvdThreshold,
+              oiThreshold: selectCoinThresholds(symbol as SymbolValue).oiThreshold,
+            },
+          })
+        : 'range';
+
+      logData.phase = state.phase;
       logData.pricePercentChange = pricePercentChange;
-
       logData.thresholds = { cvdThreshold, moveThreshold };
-      if (Math.abs(pricePercentChange) > moveThreshold) {
-        // Bearish Divergence: Price up but CVD down
-        if (pricePercentChange > 0 && cvd15m < -cvdThreshold) {
-          alerts.push('🔴 МЕДВЕЖЬЯ ДИВЕРГЕНЦИЯ\nРост цены на слабых покупках — разворот вниз');
-        }
-        // Bullish Divergence: Price down but CVD up
-        if (pricePercentChange < 0 && cvd15m > cvdThreshold) {
-          alerts.push('🟢 БЫЧЬЯ ДИВЕРГЕНЦИЯ\nПадение на сильных покупках — разворот вверх');
-        }
-      }
-
       logData.fundingRate = snap.fundingRate;
-
-      // =====================
-      // Funding extremes
-      // =====================
-      if (Math.abs(snap.fundingRate) > FUNDING_RATE_THRESHOLDS.EXTREME) {
-        alerts.push(`💰 Высокие фандинги: ${formatFundingRate(snap.fundingRate)}`);
-      }
 
       // =====================
       // Entry Score Calculation
@@ -245,7 +172,6 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       });
 
       logData.scores = { longScore, shortScore };
-
       console.log(`${symbol}: `, '0) entrySignal:', entrySignal);
 
       // =====================
@@ -295,16 +221,17 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
           delta,
           cvd3m: cvd3m || 0,
           impulse,
+          phase: state.phase,
         });
         console.log('2) confirmed value:', JSON.stringify(fsm));
       }
 
-      const paperPos = getPaperPosition();
+      const paperPos = getPaperPosition(symbol);
 
       console.log('3) paperPos:', JSON.stringify(paperPos));
 
       const exitSignal =
-        fsm.state === 'OPEN'
+        fsm.state === 'OPEN' && paperPos
           ? shouldExitPosition({
               fsm,
               signal,
@@ -313,6 +240,9 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
               currentPrice: snap.price,
               now,
               entryPrice: paperPos?.entryPrice || 0,
+              longScore,
+              shortScore,
+              phase: state.phase,
             })
           : false;
 
@@ -327,33 +257,62 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       // =====================
       // Actions
       // =====================
-      const hasOpen = hasOpenPaperPosition();
-      if (action === 'SETUP') {
-        console.log('4.1) ACTION IS:  SETUP');
-        if (!state.lastAlertAt || now - state.lastAlertAt > ALERT_COOLDOWN) {
-          onAlert(
-            `⚠️ *${symbol}*\n` +
-              `${fsm.side === 'LONG' ? '🟢 LONG SETUP' : '🔴 SHORT SETUP'}\n` +
-              `${entrySignal}`
-          );
-          state.lastAlertAt = now;
-        }
+      const hasOpen = hasOpenPaperPosition(symbol);
+      // 2. ВХОД В ПОЗИЦИЮ (ENTER_MARKET)
+      // Важно: проверяем экшен ENTER_MARKET из нашего нового FSM
+      if (action === 'ENTER_MARKET' && !hasOpen) {
+        // Сохраняем цену входа в контекст FSM (нужно для расчета PnL в shouldExitPosition)
+        fsm.entryPrice = snap.price;
+
+        console.log(`[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase}`);
+
+        openPaperPosition(symbol, fsm.side!, snap.price, now);
+
+        onAlert(
+          `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
+            `Тип: ${fsm.side === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}\n` +
+            `Фаза: *${state.phase.toUpperCase()}*\n` + // Видим фазу
+            `Цена: ${snap.price}\n` +
+            `Score: L:${longScore} S:${shortScore}`
+        );
+        state.lastConfirmationAt = now;
       }
 
-      if (action === 'ENTER' && !hasOpen) {
-        console.log('4.1) ACTION IS:  ENTER');
-        openPaperPosition(fsm.side!, snap.price, now);
-        if (!state.lastConfirmationAt || now - state.lastConfirmationAt > CONFIRM_COOLDOWN) {
-          onAlert(
-            `${symbol}\n${fsm.side === 'LONG' ? '🟢 ENTER LONG' : '🔴 ENTER SHORT'}\n${entrySignal}`
-          );
-          state.lastConfirmationAt = now;
-        }
+      // 3. ВЫХОД ИЗ ПОЗИЦИИ (EXIT_MARKET)
+      if (action === 'EXIT_MARKET' && hasOpen) {
+        const pos = getPaperPosition(symbol); // Берем данные до закрытия для расчета
+        const pnl = pos
+          ? (
+              ((snap.price - pos.entryPrice) / pos.entryPrice) *
+              (pos.side === 'LONG' ? 100 : -100)
+            ).toFixed(2)
+          : 0;
+
+        console.log(`[TRADE] 🏁 EXIT ${symbol} | PnL: ${pnl}%`);
+
+        closePaperPosition(symbol, snap.price, now);
+
+        // Определяем красивое описание причины выхода
+        let exitReason = 'Тайм-аут';
+        const pnlNum = Number(pnl); // Convert pnl to number for comparison
+        if (state.phase === 'blowoff') exitReason = '🚀 Кульминация (Blow-off)';
+        else if (pnlNum <= -EXIT_THRESHOLDS.STOP_LOSS_PCT) exitReason = '🛑 Стоп-лосс';
+        else if (pnlNum >= EXIT_THRESHOLDS.TAKE_PROFIT_PCT)
+          exitReason = '💰 Тейк-профит (ослабление)';
+        else if (exitSignal) exitReason = '⚠️ Смена сигнала/Score';
+
+        onAlert(
+          `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +
+            `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
+            `Цена: ${snap.price}\n` +
+            `Причина: ${exitReason}`
+        );
       }
-      if (action === 'EXIT' && hasOpen) {
-        console.log('4.1) ACTION IS:  EXIT');
-        closePaperPosition(snap.price, now);
-        onAlert(`⚪ EXIT ${fsm.side}`);
+
+      // 4. ОБРАБОТКА ОТМЕНЫ (Если сетап не подтвердился)
+      if (['CANCEL_SETUP', 'TIMEOUT_SETUP', 'CANCEL_CONFIRM'].includes(action)) {
+        console.log(`[FSM] Setup cancelled: ${action}`);
+        // Можно не слать алерты на каждое затишье, чтобы не спамить в Telegram
       }
       console.log('==============================================');
     } catch (err) {

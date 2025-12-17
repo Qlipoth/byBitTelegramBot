@@ -1,4 +1,4 @@
-import { getTrendThresholds, TREND_THRESHOLDS } from './constants.market.js';
+import { getTrendThresholds, SYMBOLS, TREND_THRESHOLDS } from './constants.market.js';
 import type {
   ConfirmEntryParams,
   EntryScores,
@@ -6,6 +6,7 @@ import type {
   MarketDelta,
   MarketPhase,
   SignalAgreementParams,
+  SymbolValue,
 } from './types.js';
 
 // =====================
@@ -126,6 +127,14 @@ export function calculateEntryScores({
   /* =====================
    1️⃣ Phase (max 15)
   ===================== */
+  if (state.phase === 'blowoff') {
+    // В фазе кульминации обнуляем баллы, чтобы не зайти на "хаях"
+    return {
+      longScore: 0,
+      shortScore: 0,
+      entrySignal: `🚫 BLOWOFF (Опасность разворота)`,
+    };
+  }
   // Убираем бонус за Range. Range — это отсутствие сетапа.
   if (state.phase === 'accumulation') {
     longScore += 15;
@@ -251,54 +260,154 @@ export function getSignalAgreement({
   cvdThreshold,
   fundingRate,
 }: SignalAgreementParams) {
-  // ❌ Глобальные блокировки
-  if (phase === 'range') return 'NONE';
-  if (Math.abs(pricePercentChange) < moveThreshold) return 'NONE';
+  // 1️⃣ Блокировка при кульминации (Blow-off)
+  if (phase === 'blowoff') return 'NONE';
 
-  // 🟢 LONG
-  if (
-    longScore >= 65 &&
-    longScore - shortScore >= 10 &&
-    cvd15m > cvdThreshold &&
-    fundingRate <= 0
-  ) {
-    return 'LONG';
+  // 2️⃣ ЛОГИКА ДЛЯ ТРЕНДА / НАКОПЛЕНИЯ
+  if (phase === 'trend' || phase === 'accumulation' || phase === 'distribution') {
+    // Используем твой динамический moveThreshold от ATR
+    if (Math.abs(pricePercentChange) < moveThreshold) return 'NONE';
+
+    if (
+      longScore >= 65 &&
+      longScore - shortScore >= 10 &&
+      cvd15m > cvdThreshold &&
+      fundingRate <= 0.0001
+    ) {
+      return 'LONG';
+    }
+    if (
+      shortScore >= 65 &&
+      shortScore - longScore >= 10 &&
+      cvd15m < -cvdThreshold &&
+      fundingRate >= -0.0001
+    ) {
+      return 'SHORT';
+    }
   }
 
-  // 🔴 SHORT
-  if (
-    shortScore >= 65 &&
-    shortScore - longScore >= 10 &&
-    cvd15m < -cvdThreshold &&
-    fundingRate >= 0
-  ) {
-    return 'SHORT';
+  // 3️⃣ ЛОГИКА ДЛЯ ФЛЕТА (Range)
+  if (phase === 'range') {
+    // Во флете нам не нужно ждать пробоя moveThreshold!
+    // Мы доверяем скорингу, который во флете ищет точки у границ.
+    if (longScore >= 65 && longScore - shortScore >= 15) return 'LONG';
+    if (shortScore >= 65 && shortScore - longScore >= 15) return 'SHORT';
   }
 
   return 'NONE';
 }
 
-export function confirmEntry({ signal, delta, cvd3m, impulse }: ConfirmEntryParams): boolean {
-  if (!delta || !impulse || cvd3m === undefined) {
-    return false;
+export function confirmEntry({
+  signal,
+  delta,
+  cvd3m,
+  impulse,
+  phase,
+}: ConfirmEntryParams): boolean {
+  if (!delta || !impulse || cvd3m === undefined) return false;
+
+  const pChange = delta.priceChangePct;
+
+  // Если мы в ТРЕНДЕ — подтверждаем через импульс (как и было)
+  if (phase === 'trend') {
+    if (signal === 'LONG') return pChange > impulse.PRICE_SURGE_PCT && cvd3m > 0;
+    if (signal === 'SHORT') return pChange < -impulse.PRICE_SURGE_PCT && cvd3m < 0;
   }
-  if (signal === 'LONG') {
-    return delta.priceChangePct > impulse.PRICE_SURGE_PCT && cvd3m > 0;
+
+  // Если мы в НАКОПЛЕНИИ или ФЛЕТЕ — подтверждение должно быть мягче,
+  // так как мы ловим самое начало движения или отскок.
+  if (phase === 'accumulation' || phase === 'range') {
+    if (signal === 'LONG') return pChange > 0 && cvd3m > 0; // Просто подтверждаем, что цена и дельта смотрят вверх
+    if (signal === 'SHORT') return pChange < 0 && cvd3m < 0;
   }
-  if (signal === 'SHORT') {
-    return delta.priceChangePct < -impulse.PRICE_SURGE_PCT && cvd3m < 0;
-  }
+
   return false;
 }
 
-export function detectMarketPhase(delta30m: MarketDelta): MarketPhase {
-  const price = delta30m.priceChangePct;
-  const oi = delta30m.oiChangePct;
+export function detectMarketPhase(params: {
+  delta30m: MarketDelta;
+  delta15m: MarketDelta;
+  cvd30m: number;
+  settings: { moveThreshold: number; cvdThreshold: number; oiThreshold: number };
+}): MarketPhase {
+  const { delta30m, delta15m, cvd30m, settings } = params;
+  const p30 = delta30m.priceChangePct;
+  const oi30 = delta30m.oiChangePct;
+  const oi15 = delta15m.oiChangePct;
 
-  if (oi > 2 && Math.abs(price) < 1.8) return 'accumulation';
-  if (oi < -2 && Math.abs(price) < 1.8) return 'distribution';
+  // 1️⃣ ТРЕНД (Используем moveThreshold из настроек)
+  // Для BTC это будет 0.5%, для щитка 2.0%
+  if (Math.abs(p30) > settings.moveThreshold && Math.abs(oi15) > settings.oiThreshold) {
+    return 'trend';
+  }
 
-  if (Math.abs(price) > 2.2 && Math.abs(oi) > 1) return 'trend';
+  // 2️⃣ НАКОПЛЕНИЕ (Accumulation)
+  // Цена стоит (меньше порога), но OI растет + CVD выше порога монеты
+  if (
+    Math.abs(p30) < settings.moveThreshold * 0.5 &&
+    oi30 > settings.oiThreshold &&
+    cvd30m > settings.cvdThreshold
+  ) {
+    return 'accumulation';
+  }
+
+  // 3️⃣ РАСПРЕДЕЛЕНИЕ (Distribution)
+  if (
+    Math.abs(p30) < settings.moveThreshold * 0.5 &&
+    oi30 > settings.oiThreshold &&
+    cvd30m < -settings.cvdThreshold
+  ) {
+    return 'distribution';
+  }
+
+  // 4️⃣ КУЛЬМИНАЦИЯ / ВЫХОД
+  if (Math.abs(p30) > settings.moveThreshold * 0.7 && oi15 < -settings.oiThreshold) {
+    return 'blowoff';
+  }
 
   return 'range';
+}
+
+const MARKET_SETTINGS = {
+  // Для тяжелых монет (BTC, ETH)
+  LIQUID: {
+    moveThreshold: 0.5, // Малое движение уже тренд
+    cvdThreshold: 15000, // Нужно много денег, чтобы заметить фазу
+    oiThreshold: 0.3, // Даже 0.3% OI — это серьезно
+  },
+  // Для обычных альтов (SOL, XRP, ADA)
+  MEDIUM: {
+    moveThreshold: 1.0,
+    cvdThreshold: 5000,
+    oiThreshold: 0.8,
+  },
+  // Для волатильных щитков (PEPE, FOLKS и т.д.)
+  VOLATILE: {
+    moveThreshold: 2.2, // 0.5% для них — это просто шум
+    cvdThreshold: 1500, // Маленький объем уже двигает цену
+    oiThreshold: 1.5,
+  },
+};
+
+/**
+ * Определяет категорию монеты и возвращает соответствующие пороги
+ */
+export function selectCoinThresholds(symbol: SymbolValue) {
+  // 2. Определяем списки (их можно расширять)
+  const liquidCoins = new Set<SymbolValue>([SYMBOLS.BTC, SYMBOLS.ETH, SYMBOLS.SOL]);
+  const mediumLiquidCoins = new Set<SymbolValue>([SYMBOLS.XRP, SYMBOLS.PIPPIN, SYMBOLS.BEAT]);
+
+  // 3. Логика выбора
+  // Самые ликвидные
+  if (liquidCoins.has(symbol)) {
+    return MARKET_SETTINGS.LIQUID;
+  }
+
+  // Самые волатильные (шиткоины/мемкоины)
+  if (mediumLiquidCoins.has(symbol)) {
+    return MARKET_SETTINGS.VOLATILE;
+  }
+
+  // Все остальное (SOL, XRP, ADA, DOT и т.д.) по умолчанию — MEDIUM
+  return MARKET_SETTINGS.MEDIUM;
 }

@@ -1,3 +1,5 @@
+import type { SYMBOLS } from './constants.market.js';
+
 export interface MarketSnapshot {
   symbol: string;
   price: number;
@@ -14,7 +16,7 @@ export interface MarketDelta {
   minutesAgo: number;
 }
 
-export type MarketPhase = 'range' | 'accumulation' | 'trend' | 'distribution';
+export type MarketPhase = 'range' | 'accumulation' | 'trend' | 'distribution' | 'blowoff';
 
 export interface MarketState {
   phase: MarketPhase;
@@ -85,4 +87,7 @@ export interface ConfirmEntryParams {
   delta: Delta;
   cvd3m: number;
   impulse: ImpulseThresholds;
+  phase: MarketPhase;
 }
+
+export type SymbolValue = (typeof SYMBOLS)[keyof typeof SYMBOLS];

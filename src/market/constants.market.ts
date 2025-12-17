@@ -24,6 +24,8 @@ export const SYMBOLS = {
   DOT: 'DOTUSDT',
   MATIC: 'MATICUSDT',
   USTC: 'USTCUSDT',
+  PIPPIN: 'PIPPINUSDT',
+  BEAT: 'BEATUSDT',
 
   // Default symbol
   DEFAULT: 'BTCUSDT',
@@ -199,7 +201,7 @@ export const FUNDING_RATE_THRESHOLDS = {
   EXTREME: 0.03, // 0.03% per 8h
 } as const;
 
-export const COINS_COUNT = 7;
+export const COINS_COUNT = 20;
 
 export const STRUCTURE_WINDOW = 15;
 

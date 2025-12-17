@@ -11,41 +11,50 @@ export interface ClosedPaperPosition extends PaperPosition {
   exitTime: number;
   pnlPct: number;
   durationMs: number;
+  symbol: string;
 }
 
-let currentPosition: PaperPosition | null = null;
+// Используем Map для поддержки нескольких монет одновременно
+const activePositions = new Map<string, PaperPosition>();
 const closedPositions: ClosedPaperPosition[] = [];
 
 // =====================
 // Open position
 // =====================
-export function openPaperPosition(side: PaperSide, price: number, now: number) {
-  if (currentPosition) return;
+export function openPaperPosition(symbol: string, side: PaperSide, price: number, now: number) {
+  if (activePositions.has(symbol)) return;
 
-  currentPosition = {
+  activePositions.set(symbol, {
     side,
     entryPrice: price,
     entryTime: now,
-  };
+  });
 
-  console.log(`[PAPER] OPEN ${side} @ ${price}`);
+  console.log(`[PAPER] [${symbol}] OPEN ${side} @ ${price}`);
 }
 
 // =====================
 // Close position
 // =====================
-export function closePaperPosition(price: number, now: number) {
-  if (!currentPosition) return;
+export function closePaperPosition(symbol: string, price: number, now: number) {
+  const pos = activePositions.get(symbol);
+  if (!pos) return;
 
-  const { side, entryPrice, entryTime } = currentPosition;
+  const { side, entryPrice, entryTime } = pos;
 
-  const pnlPct =
+  // Учитываем комиссию (стандартная 0.1% за открытие + 0.1% за закрытие = 0.2%)
+  const FEE = 0.2;
+
+  const rawPnl =
     side === 'LONG'
       ? ((price - entryPrice) / entryPrice) * 100
       : ((entryPrice - price) / entryPrice) * 100;
 
+  const pnlPct = rawPnl - FEE;
+
   const closed: ClosedPaperPosition = {
-    ...currentPosition,
+    ...pos,
+    symbol, // добавляем символ в историю
     exitPrice: price,
     exitTime: now,
     pnlPct,
@@ -53,36 +62,22 @@ export function closePaperPosition(price: number, now: number) {
   };
 
   closedPositions.push(closed);
+  activePositions.delete(symbol);
 
   console.log(
-    `[PAPER] CLOSE ${side} @ ${price} | PnL: ${pnlPct.toFixed(2)}% | ${Math.round(
-      closed.durationMs / 1000
-    )}s`
+    `[PAPER] [${symbol}] CLOSE ${side} @ ${price} | PnL (net): ${pnlPct.toFixed(2)}% | ${Math.round(
+      closed.durationMs / 1000 / 60
+    )} min`
   );
-
-  currentPosition = null;
 }
 
 // =====================
 // Helpers
 // =====================
-export function hasOpenPaperPosition() {
-  return Boolean(currentPosition);
+export function hasOpenPaperPosition(symbol: string) {
+  return activePositions.has(symbol);
 }
 
-export function getPaperPosition() {
-  return currentPosition;
-}
-
-export function getPaperStats() {
-  const total = closedPositions.length;
-  const wins = closedPositions.filter(p => p.pnlPct > 0).length;
-  const avgPnL = total > 0 ? closedPositions.reduce((s, p) => s + p.pnlPct, 0) / total : 0;
-
-  return {
-    total,
-    wins,
-    winRate: total ? (wins / total) * 100 : 0,
-    avgPnL,
-  };
+export function getPaperPosition(symbol: string) {
+  return activePositions.get(symbol);
 }
