@@ -1,6 +1,11 @@
 import { saveSnapshot, getSnapshots } from './snapshotStore.js';
 import { compareSnapshots } from './compare.js';
-import { getMarketSnapshot, getTopLiquidSymbols, ws } from '../services/bybit.js';
+import {
+  getMarketSnapshot,
+  getTopLiquidSymbols,
+  preloadMarketSnapshots,
+  ws,
+} from '../services/bybit.js';
 import {
   INTERVALS,
   PRIORITY_COINS,
@@ -56,7 +61,7 @@ export async function initializeMarketWatcher(onAlert: (msg: string) => void) {
 // =====================
 // Single symbol watcher
 // =====================
-export function startMarketWatcher(symbol: string, onAlert: (msg: string) => void) {
+export async function startMarketWatcher(symbol: string, onAlert: (msg: string) => void) {
   const INTERVAL = INTERVALS.ONE_MIN;
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
 
@@ -64,6 +69,12 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
   const structure = isPriorityCoin ? LIQUID_STRUCTURE_THRESHOLDS : BASE_STRUCTURE_THRESHOLDS;
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
+
+  const snapshots = await preloadMarketSnapshots(symbol);
+
+  for (const snap of snapshots) {
+    saveSnapshot(snap); // ТВОЯ существующая функция
+  }
 
   return setInterval(async () => {
     try {
@@ -85,6 +96,7 @@ export function startMarketWatcher(symbol: string, onAlert: (msg: string) => voi
       };
 
       const snaps = getSnapshots(symbol);
+      console.log('snaps', snaps);
       if (snaps.length < 5) return;
 
       // 1m импульс — сравнение с предыдущим снапом

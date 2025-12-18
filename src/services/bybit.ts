@@ -122,3 +122,79 @@ export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]>
     return PRIORITY_COINS.slice(0, limit);
   }
 }
+
+export async function preloadMarketSnapshots(symbol: string): Promise<MarketSnapshot[]> {
+  // 1️⃣ Загружаем всё параллельно
+  const [klines, oiHistory, funding] = await Promise.all([
+    bybitClient.getKline({
+      category: 'linear',
+      symbol,
+      interval: '1',
+      limit: 30,
+    }),
+    bybitClient.getOpenInterest({
+      category: 'linear',
+      symbol,
+      intervalTime: '5min',
+      limit: 6, // ~30 минут
+    }),
+    bybitClient.getFundingRateHistory({
+      category: 'linear',
+      symbol,
+      limit: 1,
+    }),
+  ]);
+
+  if (
+    !klines?.result?.list?.length ||
+    !oiHistory?.result?.list?.length ||
+    !funding?.result?.list?.length
+  ) {
+    throw new Error(`[PRELOAD] Failed to load history for ${symbol}`);
+  }
+
+  const candles = klines.result.list
+    .map(c => ({
+      timestamp: Number(c[0]),
+      close: Number(c[4]),
+    }))
+    // свечи приходят в обратном порядке
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const oiPoints = oiHistory.result.list
+    .map(oi => ({
+      timestamp: Number(oi.timestamp),
+      openInterest: Number(oi.openInterest),
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  const fundingRate = Number(funding.result.list[0]!.fundingRate);
+
+  // 2️⃣ Функция поиска актуального OI для свечи
+  function getOiForTimestamp(ts: number): number {
+    let currentOi = oiPoints[0]!.openInterest;
+
+    for (const oi of oiPoints) {
+      if (oi.timestamp <= ts) {
+        currentOi = oi.openInterest;
+      } else {
+        break;
+      }
+    }
+    return currentOi;
+  }
+
+  // 3️⃣ Собираем MarketSnapshot[]
+  const snapshots: MarketSnapshot[] = candles.map(candle => ({
+    symbol,
+    price: candle.close,
+    volume24h: 0, // не критично для логики
+    openInterest: getOiForTimestamp(candle.timestamp),
+    fundingRate,
+    timestamp: candle.timestamp,
+  }));
+
+  console.log(`[PRELOAD] ${symbol}: loaded ${snapshots.length} snapshots`);
+
+  return snapshots;
+}
