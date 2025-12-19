@@ -1,6 +1,7 @@
 import { saveSnapshot, getSnapshots } from './snapshotStore.js';
 import { compareSnapshots } from './compare.js';
 import {
+  getCurrentBalance,
   getMarketSnapshot,
   getTopLiquidSymbols,
   preloadMarketSnapshots,
@@ -12,8 +13,6 @@ import {
   COINS_COUNT,
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
-  BASE_STRUCTURE_THRESHOLDS,
-  LIQUID_STRUCTURE_THRESHOLDS,
 } from './constants.market.js';
 import {
   calculateRSI,
@@ -24,17 +23,13 @@ import {
   detectMarketPhase,
   selectCoinThresholds,
 } from './utils.js';
-import { createFSM, EXIT_THRESHOLDS, fsmStep, shouldExitPosition } from './fsm.js';
+import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState, SymbolValue } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
 import { calcPercentChange, getCvdThreshold } from './candleBuilder.js';
-import {
-  closePaperPosition,
-  getPaperPosition,
-  hasOpenPaperPosition,
-  openPaperPosition,
-} from './paperPositionManager.js';
+import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
+import { activePositions, closeRealPosition, openRealPosition } from './realTradeManager.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -66,7 +61,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
 
   const impulse = isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS;
-  const structure = isPriorityCoin ? LIQUID_STRUCTURE_THRESHOLDS : BASE_STRUCTURE_THRESHOLDS;
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
@@ -84,6 +78,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       const cvd15m = getCVDLastMinutes(symbol, 15);
       const cvd30m = getCVDLastMinutes(symbol, 30);
       const snap = await getMarketSnapshot(symbol);
+      const now = Date.now();
       saveSnapshot(snap);
       logData.cvd = {
         cvd1m,
@@ -95,8 +90,16 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         type: 'snapshot',
       };
 
+      // =====================
+      // FSM Integration
+      // =====================
+      // Get or create FSM for this symbol
+      if (!tradeFSMBySymbol.has(symbol)) {
+        tradeFSMBySymbol.set(symbol, createFSM());
+      }
+      const fsm = tradeFSMBySymbol.get(symbol)!;
+
       const snaps = getSnapshots(symbol);
-      console.log('snaps', snaps);
       if (snaps.length < 5) return;
 
       // 1m импульс — сравнение с предыдущим снапом
@@ -111,8 +114,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // Проверяем, что действительно есть 15/30 минут истории,
       // а не 3–5 минут после рестарта.
       const has30m = snaps30m.length >= 30;
-
-      if (snaps.length < 5) return;
 
       const delta15m = compareSnapshots(snap, snaps15m[0]!);
       const delta30m = compareSnapshots(snap, snaps30m[0]!);
@@ -205,15 +206,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       console.log('==============================================');
       console.log('0.1) signal is:', signal);
 
-      // =====================
-      // FSM Integration
-      // =====================
-      // Get or create FSM for this symbol
-      if (!tradeFSMBySymbol.has(symbol)) {
-        tradeFSMBySymbol.set(symbol, createFSM());
-      }
-      const fsm = tradeFSMBySymbol.get(symbol)!;
-
       logData.fsm = {
         state: fsm.state,
         side: fsm.side,
@@ -224,7 +216,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       console.log('1) FSM:', JSON.stringify(fsm));
       let confirmed = false;
       // Step the FSM
-      const now = Date.now();
 
       // Legacy confirmation check for backward compatibility
       if (signal === 'LONG' || signal === 'SHORT') {
@@ -238,12 +229,14 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         console.log('2) confirmed value:', JSON.stringify(fsm));
       }
 
-      const paperPos = getPaperPosition(symbol);
+      const hasOpen = activePositions.has(symbol);
 
-      console.log('3) paperPos:', JSON.stringify(paperPos));
+      const currentPos = activePositions.get(symbol);
+
+      console.log('3) currentPos:', JSON.stringify(currentPos));
 
       const exitSignal =
-        fsm.state === 'OPEN' && paperPos
+        fsm.state === 'OPEN' && currentPos
           ? shouldExitPosition({
               fsm,
               signal,
@@ -251,7 +244,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
               fundingRate: snap.fundingRate,
               currentPrice: snap.price,
               now,
-              entryPrice: paperPos?.entryPrice || 0,
+              entryPrice: currentPos.entryPrice, // Берем реальную цену входа
               longScore,
               shortScore,
               phase: state.phase,
@@ -269,55 +262,68 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // =====================
       // Actions
       // =====================
-      const hasOpen = hasOpenPaperPosition(symbol);
+
       // 2. ВХОД В ПОЗИЦИЮ (ENTER_MARKET)
       // Важно: проверяем экшен ENTER_MARKET из нашего нового FSM
       if (action === 'ENTER_MARKET' && !hasOpen) {
         // Сохраняем цену входа в контекст FSM (нужно для расчета PnL в shouldExitPosition)
         fsm.entryPrice = snap.price;
 
-        console.log(`[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase}`);
+        const stopPrice = findStopLossLevel(snaps, fsm.side!, state.phase === 'trend' ? 15 : 30);
 
-        openPaperPosition(symbol, fsm.side!, snap.price, now);
+        if (!stopPrice) {
+          console.log('Не сформирован стоплосс!');
+          return;
+        }
 
-        onAlert(
-          `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
-            `Тип: ${fsm.side === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}\n` +
-            `Фаза: *${state.phase.toUpperCase()}*\n` + // Видим фазу
-            `Цена: ${snap.price}\n` +
-            `Score: L:${longScore} S:${shortScore}`
+        const balance = await getCurrentBalance();
+
+        console.log(
+          `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance}`
         );
-        state.lastConfirmationAt = now;
+
+        const success = await openRealPosition({
+          symbol,
+          side: fsm.side!,
+          price: snap.price,
+          stopPrice,
+          balance,
+        });
+
+        if (success) {
+          onAlert(
+            `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
+              `Тип: ${fsm.side === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}\n` +
+              `Фаза: *${state.phase.toUpperCase()}*\n` + // Видим фазу
+              `Цена: ${snap.price}\n` +
+              `Score: L:${longScore} S:${shortScore}`
+          );
+          state.lastConfirmationAt = now;
+        } else {
+          // Если не зашли (проскальзывание), сбрасываем FSM, чтобы не висел
+          fsmStep(fsm, { signal: 'NONE', confirmed: false, now, exitSignal: true });
+        }
       }
 
       // 3. ВЫХОД ИЗ ПОЗИЦИИ (EXIT_MARKET)
+      // ВЫХОД ИЗ ПОЗИЦИИ
       if (action === 'EXIT_MARKET' && hasOpen) {
-        const pos = getPaperPosition(symbol); // Берем данные до закрытия для расчета
+        const pos = activePositions.get(symbol);
+
+        // ВАЖНО: Добавляем await
+        await closeRealPosition(symbol);
+
         const pnl = pos
           ? (
               ((snap.price - pos.entryPrice) / pos.entryPrice) *
               (pos.side === 'LONG' ? 100 : -100)
             ).toFixed(2)
-          : 0;
-
-        console.log(`[TRADE] 🏁 EXIT ${symbol} | PnL: ${pnl}%`);
-
-        closePaperPosition(symbol, snap.price, now);
-
-        // Определяем красивое описание причины выхода
-        let exitReason = 'Тайм-аут';
-        const pnlNum = Number(pnl); // Convert pnl to number for comparison
-        if (state.phase === 'blowoff') exitReason = '🚀 Кульминация (Blow-off)';
-        else if (pnlNum <= -EXIT_THRESHOLDS.STOP_LOSS_PCT) exitReason = '🛑 Стоп-лосс';
-        else if (pnlNum >= EXIT_THRESHOLDS.TAKE_PROFIT_PCT)
-          exitReason = '💰 Тейк-профит (ослабление)';
-        else if (exitSignal) exitReason = '⚠️ Смена сигнала/Score';
+          : '0';
 
         onAlert(
           `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +
             `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
-            `Цена: ${snap.price}\n` +
-            `Причина: ${exitReason}`
+            `Цена: ${snap.price}\n`
         );
       }
 

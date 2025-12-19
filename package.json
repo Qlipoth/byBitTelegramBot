@@ -5,8 +5,10 @@
   "type": "module",
   "main": "dist/bot.js",
   "scripts": {
+    "dev": "pnpm run typecheck && pnpm run start",
+    "typecheck": "tsc --noEmit",
     "preview": "node dist/bot.js",
-    "dev": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
+    "start": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
     "build": "node build.js",
     "build:prod": "NODE_ENV=production node build.js"
   },

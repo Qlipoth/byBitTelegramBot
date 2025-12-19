@@ -217,3 +217,12 @@ export const PRIORITY_COINS = [
 export const ALERT_COOLDOWN = 10 * 60 * 1000;
 export const CONFIRM_COOLDOWN = 2 * 60_000;
 export const LOG_PATH = '/tmp/bot.log';
+
+// ---- Конфигурация Риска ----
+export const RISK_PER_TRADE = 0.005; // 0.5% от депозита
+export const RR_RATIO = 3; // Соотношение Риск/Прибыль
+export const FEE = 0.12; // Реалистичная комиссия (Bybit Taker ~0.06% * 2)
+
+export const ENTRY_FEE_PCT = 0.00055; // 0.055% (Taker)
+export const EXIT_FEE_PCT = 0.00055; // 0.055% (Taker)
+export const TOTAL_FEE_PCT = ENTRY_FEE_PCT + EXIT_FEE_PCT; // 0.0011 (или 0.11%)

@@ -411,3 +411,12 @@ export function selectCoinThresholds(symbol: SymbolValue) {
   // Все остальное (SOL, XRP, ADA, DOT и т.д.) по умолчанию — MEDIUM
   return MARKET_SETTINGS.MEDIUM;
 }
+
+/**
+ * Округляет значение до нужного шага (tickSize или qtyStep)
+ */
+export function roundStep(value: number, step: number): number {
+  if (!step) return value;
+  const precision = step.toString().split('.')[1]?.length || 0;
+  return parseFloat((Math.floor(value / step) * step).toFixed(precision));
+}

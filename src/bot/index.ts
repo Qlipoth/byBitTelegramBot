@@ -1,7 +1,7 @@
 /* ===============================
    GLOBAL GUARDS & SHUTDOWN
    =============================== */
-
+dotenv.config();
 import * as fs from 'node:fs';
 
 let isShuttingDown = false;
@@ -60,8 +60,6 @@ import * as dotenv from 'dotenv';
 import { getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT, LOG_PATH } from '../market/constants.market.js';
-
-dotenv.config();
 
 const requiredEnvVars = ['BOT_TOKEN', 'BYBIT_API_KEY', 'BYBIT_SECRET_KEY'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);

@@ -3,16 +3,30 @@ import type { MarketSnapshot } from '../market/types.js';
 import { PRIORITY_COINS } from '../market/constants.market.js';
 import { initCVDTracker } from '../market/cvdTracker.js';
 
+import * as dotenv from 'dotenv';
+
+dotenv.config();
+
+const key = process.env.BYBIT_API_KEY;
+const secret = process.env.BYBIT_SECRET_KEY;
+
+if (!key || !secret) {
+  console.error('❌ Ошибка: API ключи не найдены в process.env!');
+  console.log('Текущие ключи:', { key, secret }); // Поможет понять, что они undefined
+  process.exit(1);
+}
+
 // Initialize Bybit client
-const bybitClient = new RestClientV5({
-  key: process.env.BYBIT_API_KEY!,
-  secret: process.env.BYBIT_SECRET_KEY!,
+export const bybitClient = new RestClientV5({
+  key,
+  secret,
+  demoTrading: true,
   testnet: false, // Set to true for testnet
 });
 
 export const ws = new WebsocketClient({
-  key: process.env.BYBIT_API_KEY!, // можно без ключей для public данных
-  secret: process.env.BYBIT_SECRET_KEY!,
+  key, // можно без ключей для public данных
+  secret,
   market: 'v5',
   testnet: false,
 });
@@ -197,4 +211,31 @@ export async function preloadMarketSnapshots(symbol: string): Promise<MarketSnap
   console.log(`[PRELOAD] ${symbol}: loaded ${snapshots.length} snapshots`);
 
   return snapshots;
+}
+
+// Функция для получения актуального доступного баланса
+export async function getCurrentBalance(): Promise<number> {
+  try {
+    const response = await bybitClient.getWalletBalance({
+      accountType: 'UNIFIED',
+      coin: 'USDT',
+    });
+
+    // 1. Берем первый аккаунт из списка
+    const account = response.result.list[0];
+    if (!account) return 0;
+
+    // 2. Оптимальный вариант для Unified аккаунта — общий доступный баланс
+    // Если нужно строго USDT, можно взять из массива coin, как показано ниже
+    const totalAvailable = parseFloat(account.totalAvailableBalance || '0');
+
+    // Если вы хотите именно USDT баланс кошелька:
+    // const usdtCoin = account.coin.find(c => c.coin === 'USDT');
+    // const usdtBalance = parseFloat(usdtCoin?.walletBalance || '0');
+
+    return totalAvailable;
+  } catch (error) {
+    console.error('Ошибка при получении баланса:', error);
+    return 0;
+  }
 }
