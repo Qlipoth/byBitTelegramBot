@@ -1,4 +1,4 @@
-import { getTrendThresholds, SYMBOLS, TREND_THRESHOLDS } from './constants.market.js';
+import { getTrendThresholds, MIN_SCORE, SYMBOLS, TREND_THRESHOLDS } from './constants.market.js';
 import type {
   ConfirmEntryParams,
   EntryScores,
@@ -235,9 +235,9 @@ export function calculateEntryScores({
   // Порог 65 — хорошо, но добавим проверку на минимальный перевес
   let entrySignal = `⚪ Нет сетапа (L:${longScore} S:${shortScore})`;
 
-  if (longScore >= 65 && longScore > shortScore + 15) {
+  if (longScore >= MIN_SCORE && longScore > shortScore + 15) {
     entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
-  } else if (shortScore >= 65 && shortScore > longScore + 15) {
+  } else if (shortScore >= MIN_SCORE && shortScore > longScore + 15) {
     entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
   }
 
