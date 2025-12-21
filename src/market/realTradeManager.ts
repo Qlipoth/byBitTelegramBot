@@ -34,19 +34,28 @@ export async function openRealPosition(params: {
 
   // 1. Считаем риск и объем (твоя функция)
   const sizing = calculatePositionSizing(balance, price, stopPrice);
-  if (!sizing) return false;
+  if (!sizing) {
+    console.log('❌ Не расчитан размер позиции', sizing);
+    return false;
+  }
 
   try {
     // 2. Получаем спецификации монеты (округления)
     const instrInfo = await bybitClient.getInstrumentsInfo({ category: 'linear', symbol });
     const instrument = instrInfo.result.list[0];
-    if (!instrument) return false;
+    if (!instrument) {
+      console.log('Не получен инструмент');
+      return false;
+    }
     const tickSize = parseFloat(instrument.priceFilter.tickSize);
     const qtyStep = parseFloat(instrument.lotSizeFilter.qtyStep);
 
     // 3. Расчет параметров ордера
     const qty = roundStep(sizing.sizeUsd / price, qtyStep);
-    if (qty <= 0) return false;
+    if (qty <= 0) {
+      console.log('❌ Ошибка расчета ордера', qty);
+      return false;
+    }
 
     // Защитный лимит (чуть хуже рынка)
     const limitPrice =
@@ -74,7 +83,7 @@ export async function openRealPosition(params: {
 
     if (order.retCode !== 0) {
       // Если код НЕ 0, значит случилась беда
-      console.error(`❌ Ошибка биржи [${order.retCode}]: ${order.retMsg}`);
+      console.log(`❌ Ошибка биржи [${order.retCode}]: ${order.retMsg}`);
       return false; // Выходим из функции, так как ордера нет
     }
 
@@ -87,7 +96,10 @@ export async function openRealPosition(params: {
 
     const orderData = history.result.list[0];
 
-    if (!orderData) return false;
+    if (!orderData) {
+      console.log('❌ Ошибка получения истории', orderData);
+      return false;
+    }
     const execQty = parseFloat(orderData.cumExecQty || '0');
     const execValue = parseFloat(orderData.cumExecValue || '0');
 
