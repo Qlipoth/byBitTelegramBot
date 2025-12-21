@@ -269,7 +269,7 @@ export function getSignalAgreement({
     if (Math.abs(pricePercentChange) < moveThreshold) return 'NONE';
 
     if (
-      longScore >= 65 &&
+      longScore >= MIN_SCORE &&
       longScore - shortScore >= 10 &&
       cvd15m > cvdThreshold &&
       fundingRate <= 0.0001
@@ -277,7 +277,7 @@ export function getSignalAgreement({
       return 'LONG';
     }
     if (
-      shortScore >= 65 &&
+      shortScore >= MIN_SCORE &&
       shortScore - longScore >= 10 &&
       cvd15m < -cvdThreshold &&
       fundingRate >= -0.0001
@@ -290,8 +290,8 @@ export function getSignalAgreement({
   if (phase === 'range') {
     // Во флете нам не нужно ждать пробоя moveThreshold!
     // Мы доверяем скорингу, который во флете ищет точки у границ.
-    if (longScore >= 65 && longScore - shortScore >= 15) return 'LONG';
-    if (shortScore >= 65 && shortScore - longScore >= 15) return 'SHORT';
+    if (longScore >= MIN_SCORE && longScore - shortScore >= 15) return 'LONG';
+    if (shortScore >= MIN_SCORE && shortScore - longScore >= 15) return 'SHORT';
   }
 
   return 'NONE';
