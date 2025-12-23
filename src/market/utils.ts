@@ -235,9 +235,9 @@ export function calculateEntryScores({
   // Порог 65 — хорошо, но добавим проверку на минимальный перевес
   let entrySignal = `⚪ Нет сетапа (L:${longScore} S:${shortScore})`;
 
-  if (longScore >= MIN_SCORE && longScore > shortScore + 15) {
+  if (longScore >= MIN_SCORE && longScore) {
     entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
-  } else if (shortScore >= MIN_SCORE && shortScore > longScore + 15) {
+  } else if (shortScore >= MIN_SCORE && shortScore) {
     entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
   }
 
