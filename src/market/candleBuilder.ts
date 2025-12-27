@@ -154,9 +154,35 @@ const CONFIG = {
   CVD_MULTIPLIER: 1500, // Множитель для порога CVD
 } as const;
 
+const MARKET_CLASS_COEFFICIENTS = {
+  LIQUID: {
+    move: 1.0,
+    cvd: 1.0,
+  },
+  MEDIUM: {
+    move: 0.85,
+    cvd: 0.5,
+  },
+  VOLATILE: {
+    move: 0.7,
+    cvd: 0.25,
+  },
+} as const;
+
+type MarketClass = 'LIQUID' | 'MEDIUM' | 'VOLATILE';
+
+export function getMarketClass(symbol: string): MarketClass {
+  if (['BTCUSDT', 'ETHUSDT'].includes(symbol)) return 'LIQUID';
+  if (['SOLUSDT', 'BNBUSDT', 'XRPUSDT'].includes(symbol)) return 'MEDIUM';
+  return 'VOLATILE';
+}
+
 export function getCvdThreshold(symbol: string) {
   const atr = getATR(symbol);
   const price = getCandle(symbol)?.close ?? 0;
+
+  const marketClass = getMarketClass(symbol);
+  const coeffs = MARKET_CLASS_COEFFICIENTS[marketClass];
 
   if (!atr || !price) {
     console.warn(`Insufficient data for ${symbol}: price=${price}, atr=${atr}`);
@@ -167,8 +193,13 @@ export function getCvdThreshold(symbol: string) {
   }
 
   const atrPct = Math.max((atr / price) * 100, CONFIG.MIN_ATR_PCT);
-  const moveThreshold = Math.max(atrPct * CONFIG.ATR_MULTIPLIER, CONFIG.MIN_MOVE_THRESHOLD);
-  const cvdThreshold = Math.max(atrPct * CONFIG.CVD_MULTIPLIER, CONFIG.MIN_CVD_THRESHOLD);
 
-  return { moveThreshold, cvdThreshold };
+  const baseMove = Math.max(atrPct * CONFIG.ATR_MULTIPLIER, CONFIG.MIN_MOVE_THRESHOLD);
+
+  const baseCvd = Math.max(atrPct * CONFIG.CVD_MULTIPLIER, CONFIG.MIN_CVD_THRESHOLD);
+
+  return {
+    moveThreshold: baseMove * coeffs.move,
+    cvdThreshold: baseCvd * coeffs.cvd,
+  };
 }
