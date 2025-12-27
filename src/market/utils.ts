@@ -261,12 +261,18 @@ export function getSignalAgreement({
   fundingRate,
 }: SignalAgreementParams) {
   // 1️⃣ Блокировка при кульминации (Blow-off)
-  if (phase === 'blowoff') return 'NONE';
+  if (phase === 'blowoff') {
+    console.log(`[SIGNAL_AGREEMENT] Blowoff phase detected, returning NONE`);
+    return 'NONE';
+  }
 
   // 2️⃣ ЛОГИКА ДЛЯ ТРЕНДА / НАКОПЛЕНИЯ
   if (phase === 'trend' || phase === 'accumulation' || phase === 'distribution') {
     // Используем твой динамический moveThreshold от ATR
-    if (Math.abs(pricePercentChange) < moveThreshold) return 'NONE';
+    if (Math.abs(pricePercentChange) < moveThreshold) {
+      console.log(`[SIGNAL_AGREEMENT] Price change ${pricePercentChange}% < moveThreshold ${moveThreshold}%, returning NONE`);
+      return 'NONE';
+    }
 
     if (
       longScore >= MIN_SCORE &&
@@ -274,6 +280,7 @@ export function getSignalAgreement({
       cvd15m > cvdThreshold &&
       fundingRate <= 0.0001
     ) {
+      console.log(`[SIGNAL_AGREEMENT] LONG signal: score=${longScore}, cvd15m=${cvd15m}, funding=${fundingRate}`);
       return 'LONG';
     }
     if (
@@ -282,6 +289,7 @@ export function getSignalAgreement({
       cvd15m < -cvdThreshold &&
       fundingRate >= -0.0001
     ) {
+      console.log(`[SIGNAL_AGREEMENT] SHORT signal: score=${shortScore}, cvd15m=${cvd15m}, funding=${fundingRate}`);
       return 'SHORT';
     }
   }
@@ -290,10 +298,17 @@ export function getSignalAgreement({
   if (phase === 'range') {
     // Во флете нам не нужно ждать пробоя moveThreshold!
     // Мы доверяем скорингу, который во флете ищет точки у границ.
-    if (longScore >= MIN_SCORE && longScore - shortScore >= 15) return 'LONG';
-    if (shortScore >= MIN_SCORE && shortScore - longScore >= 15) return 'SHORT';
+    if (longScore >= MIN_SCORE && longScore - shortScore >= 15) {
+      console.log(`[SIGNAL_AGREEMENT] RANGE LONG signal: longScore=${longScore}, shortScore=${shortScore}`);
+      return 'LONG';
+    }
+    if (shortScore >= MIN_SCORE && shortScore - longScore >= 15) {
+      console.log(`[SIGNAL_AGREEMENT] RANGE SHORT signal: shortScore=${shortScore}, longScore=${longScore}`);
+      return 'SHORT';
+    }
   }
 
+  console.log(`[SIGNAL_AGREEMENT] No signal matched: phase=${phase}, longScore=${longScore}, shortScore=${shortScore}, priceChange=${pricePercentChange}%`);
   return 'NONE';
 }
 
@@ -304,23 +319,43 @@ export function confirmEntry({
   impulse,
   phase,
 }: ConfirmEntryParams): boolean {
-  if (!delta || !impulse || cvd3m === undefined) return false;
+  if (!delta || !impulse || cvd3m === undefined) {
+    console.log(`[CONFIRM_ENTRY] Missing required data: delta=${!!delta}, impulse=${!!impulse}, cvd3m=${cvd3m}`);
+    return false;
+  }
 
   const pChange = delta.priceChangePct;
 
   // Если мы в ТРЕНДЕ — подтверждаем через импульс (как и было)
   if (phase === 'trend') {
-    if (signal === 'LONG') return pChange > impulse.PRICE_SURGE_PCT && cvd3m > 0;
-    if (signal === 'SHORT') return pChange < -impulse.PRICE_SURGE_PCT && cvd3m < 0;
+    if (signal === 'LONG') {
+      const confirmed = pChange > impulse.PRICE_SURGE_PCT && cvd3m > 0;
+      console.log(`[CONFIRM_ENTRY] TREND LONG check: pChange=${pChange} > ${impulse.PRICE_SURGE_PCT} && cvd3m=${cvd3m} > 0 => ${confirmed}`);
+      return confirmed;
+    }
+    if (signal === 'SHORT') {
+      const confirmed = pChange < -impulse.PRICE_SURGE_PCT && cvd3m < 0;
+      console.log(`[CONFIRM_ENTRY] TREND SHORT check: pChange=${pChange} < -${impulse.PRICE_SURGE_PCT} && cvd3m=${cvd3m} < 0 => ${confirmed}`);
+      return confirmed;
+    }
   }
 
   // Если мы в НАКОПЛЕНИИ или ФЛЕТЕ — подтверждение должно быть мягче,
   // так как мы ловим самое начало движения или отскок.
   if (phase === 'accumulation' || phase === 'range') {
-    if (signal === 'LONG') return pChange > 0 && cvd3m > 0; // Просто подтверждаем, что цена и дельта смотрят вверх
-    if (signal === 'SHORT') return pChange < 0 && cvd3m < 0;
+    if (signal === 'LONG') {
+      const confirmed = pChange > 0 && cvd3m > 0;
+      console.log(`[CONFIRM_ENTRY] ${phase.toUpperCase()} LONG check: pChange=${pChange} > 0 && cvd3m=${cvd3m} > 0 => ${confirmed}`);
+      return confirmed;
+    }
+    if (signal === 'SHORT') {
+      const confirmed = pChange < 0 && cvd3m < 0;
+      console.log(`[CONFIRM_ENTRY] ${phase.toUpperCase()} SHORT check: pChange=${pChange} < 0 && cvd3m=${cvd3m} < 0 => ${confirmed}`);
+      return confirmed;
+    }
   }
 
+  console.log(`[CONFIRM_ENTRY] No conditions matched: phase=${phase}, signal=${signal}, pChange=${pChange}, cvd3m=${cvd3m}`);
   return false;
 }
 
