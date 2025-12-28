@@ -43,21 +43,52 @@ export function calculatePositionSizing(
   entryPrice: number,
   stopPrice: number
 ): { sizeUsd: number; stopPct: number } | null {
+  console.log(
+    `[calculatePositionSizing] Input - balance: ${balance}, entryPrice: ${entryPrice}, stopPrice: ${stopPrice}`
+  );
+
   const stopPct = Math.abs(entryPrice - stopPrice) / entryPrice;
+  console.log(`[calculatePositionSizing] Calculated stopPct: ${stopPct}`);
 
   // 1️⃣ Валидация стопа
-  if (stopPct <= 0 || stopPct > MAX_STOP_PCT) return null;
+  if (stopPct <= 0 || stopPct > MAX_STOP_PCT) {
+    console.log(
+      `[calculatePositionSizing] ❌ Invalid stopPct: ${stopPct} (must be between 0 and ${MAX_STOP_PCT})`
+    );
+    return null;
+  }
 
   // 2️⃣ Учет комиссии в риске
   const maxPriceRiskPct = RISK_PER_TRADE - TOTAL_FEE_PCT;
-  if (maxPriceRiskPct <= 0 || stopPct > maxPriceRiskPct) return null;
+  console.log(
+    `[calculatePositionSizing] maxPriceRiskPct: ${maxPriceRiskPct} (RISK_PER_TRADE: ${RISK_PER_TRADE}, TOTAL_FEE_PCT: ${TOTAL_FEE_PCT})`
+  );
+
+  if (maxPriceRiskPct <= 0 || stopPct > maxPriceRiskPct) {
+    console.log(
+      `[calculatePositionSizing] ❌ Invalid risk parameters: maxPriceRiskPct=${maxPriceRiskPct}, stopPct=${stopPct}`
+    );
+    return null;
+  }
 
   // 3️⃣ Защита от ликвидации (cross + x10)
   const liquidationBufferPct = (1 / LEVERAGE) * 0.8; // ~8%
-  if (stopPct >= liquidationBufferPct) return null;
+  console.log(
+    `[calculatePositionSizing] liquidationBufferPct: ${liquidationBufferPct} (LEVERAGE: ${LEVERAGE})`
+  );
+
+  if (stopPct >= liquidationBufferPct) {
+    console.log(
+      `[calculatePositionSizing] ❌ Stop too close to liquidation: stopPct=${stopPct}, liquidationBufferPct=${liquidationBufferPct}`
+    );
+    return null;
+  }
 
   // 4️⃣ Размер позиции
   const sizeUsd = (balance * maxPriceRiskPct) / stopPct;
+  console.log(
+    `[calculatePositionSizing] Calculated sizeUsd: ${sizeUsd} (balance: ${balance}, maxPriceRiskPct: ${maxPriceRiskPct}, stopPct: ${stopPct})`
+  );
   if (sizeUsd < MIN_POSITION_USD) return null;
 
   return { sizeUsd, stopPct };
