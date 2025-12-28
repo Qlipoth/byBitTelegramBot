@@ -13,7 +13,9 @@ export function initCVDTracker(ws: WebsocketClient) {
         handleTrade(symbol, t);
         const isBuyerMaker = t.S === 'Sell';
         const vol = parseFloat(t.v);
-        const delta = isBuyerMaker ? -vol : +vol;
+        const price = parseFloat(t.p);
+        const notional = vol * price;
+        const delta = isBuyerMaker ? -notional : +notional;
 
         const prev = cvdCurrent.get(symbol) ?? 0;
         cvdCurrent.set(symbol, prev + delta);

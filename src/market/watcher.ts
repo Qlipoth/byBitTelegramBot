@@ -26,7 +26,7 @@ import {
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState, SymbolValue } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
-import { calcPercentChange, getCvdThreshold } from './candleBuilder.js';
+import { getCvdThreshold } from './candleBuilder.js';
 import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
 import { activePositions, closeRealPosition, openRealPosition } from './realTradeManager.js';
@@ -145,7 +145,9 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         stateBySymbol.set(symbol, state);
       }
 
-      const pricePercentChange = calcPercentChange(symbol);
+      // calcPercentChange() опирается на свечи из trade-stream и часто даёт 0 при недостатке истории.
+      // Для сигнальной логики надёжнее использовать изменения цены по снапшотам.
+      const pricePercentChange = delta15m.priceChangePct;
       const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
 
       state.phase = has30m
@@ -226,7 +228,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
           impulse,
           phase: state.phase,
         });
-        console.log('2) confirmed value:', JSON.stringify(fsm));
+        console.log('2) confirmed value:', confirmed);
       }
 
       const hasOpen = activePositions.has(symbol);

@@ -342,7 +342,7 @@ export function confirmEntry({
 
   // Если мы в НАКОПЛЕНИИ или ФЛЕТЕ — подтверждение должно быть мягче,
   // так как мы ловим самое начало движения или отскок.
-  if (phase === 'accumulation' || phase === 'range') {
+  if (phase === 'accumulation' || phase === 'distribution' || phase === 'range') {
     if (signal === 'LONG') {
       const confirmed = pChange > 0 && cvd3m > 0;
       console.log(`[CONFIRM_ENTRY] ${phase.toUpperCase()} LONG check: pChange=${pChange} > 0 && cvd3m=${cvd3m} > 0 => ${confirmed}`);
