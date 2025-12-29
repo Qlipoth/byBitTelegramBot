@@ -201,6 +201,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         cvd15m: cvd15m || 0,
         cvdThreshold,
         fundingRate: Number(snap.fundingRate || 0),
+        rsi,
       });
 
       logData.signal = signal;
