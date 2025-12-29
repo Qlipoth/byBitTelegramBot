@@ -64,7 +64,7 @@ export function calculatePositionSizing(
     `[calculatePositionSizing] maxPriceRiskPct: ${maxPriceRiskPct} (RISK_PER_TRADE: ${RISK_PER_TRADE}, TOTAL_FEE_PCT: ${TOTAL_FEE_PCT})`
   );
 
-  if (maxPriceRiskPct <= 0 || stopPct > maxPriceRiskPct) {
+  if (maxPriceRiskPct <= 0) {
     console.log(
       `[calculatePositionSizing] ❌ Invalid risk parameters: maxPriceRiskPct=${maxPriceRiskPct}, stopPct=${stopPct}`
     );
