@@ -80,6 +80,7 @@ export interface SignalAgreementParams {
   cvd15m: number;
   cvdThreshold: number;
   fundingRate: number;
+  rsi: number;
 }
 
 export interface ConfirmEntryParams {
