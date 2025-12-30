@@ -57,9 +57,11 @@ process.on('unhandledRejection', reason => {
 import { Bot, InputFile, Keyboard } from 'grammy';
 import * as dotenv from 'dotenv';
 
-import { getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
+import { bybitClient, getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT, LOG_PATH } from '../market/constants.market.js';
+import type { OrderParamsV5 } from 'bybit-api/lib/types/request/v5-trade.js';
+import { tradingState } from '../core/tradingState.js';
 
 const requiredEnvVars = ['BOT_TOKEN', 'BYBIT_API_KEY', 'BYBIT_SECRET_KEY'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
@@ -86,6 +88,9 @@ const mainKeyboard = new Keyboard()
   .text('/status')
   .text('/stop')
   .text('/download_logs')
+  .row()
+  // .text('/openPosition')
+  // .text('/closePosition')
   .resized();
 
 /* ===============================
@@ -125,12 +130,108 @@ const welcomeMsg =
 
 bot.command('start', async ctx => {
   subscribers.add(ctx.chat.id);
+  tradingState.enable();
+  await startWatchersOnce();
   console.log(`➕ Subscribed chat ${ctx.chat.id}`);
   await ctx.reply(welcomeMsg, {
     parse_mode: 'Markdown',
     reply_markup: mainKeyboard,
   });
 });
+
+// bot.command('openPosition', async ctx => {
+//   // Send initial response
+//   const loadingMsg = await ctx.reply('🔄 Placing order...');
+//
+//   try {
+//     // First, get the current position mode
+//     const positionMode = await bybitClient.getPositionInfo({
+//       category: 'linear',
+//       symbol: 'ETHUSDT',
+//     });
+//
+//     const isHedgeMode = positionMode.result?.list?.[0]?.tradeMode === 1; // 0 for one-way, 1 for hedge mode
+//
+//     console.log('positionMode: ', positionMode, isHedgeMode);
+//
+//     const side = {
+//       Buy: 'Buy',
+//       Sell: 'Sell',
+//     };
+//
+//     // Prepare order parameters
+//     const orderParams = {
+//       category: 'linear',
+//       symbol: 'ETHUSDT',
+//       side: 'Buy',
+//       orderType: 'Limit',
+//       price: '2986.1',
+//       timeInForce: 'GTC',
+//       qty: '0.05',
+//       positionIdx: 0,
+//       reduceOnly: false,
+//       stopLoss: '2969.44',
+//       takeProfit: '3002.77',
+//       slTriggerBy: 'LastPrice',
+//     } as OrderParamsV5;
+//
+//     const order = await bybitClient.submitOrder(orderParams);
+//
+//     console.log('Order response:', JSON.stringify(order, null, 2));
+//
+//     if (order.retCode !== 0) {
+//       const errorMsg = `❌ Error [${order.retCode}]: ${order.retMsg}`;
+//       console.error(errorMsg);
+//       await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, errorMsg);
+//       return;
+//     }
+//
+//     // If we get here, the order was successful
+//     const successMsg = `✅ Order placed successfully!\n` + `Order ID: ${order.result.orderId}`;
+//
+//     await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, successMsg);
+//   } catch (error) {
+//     console.error('Error in open-position command:', error);
+//     const errorMsg = '❌ Failed to place order. Please try again later.';
+//
+//     if (loadingMsg) {
+//       await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, errorMsg);
+//     } else {
+//       await ctx.reply(errorMsg);
+//     }
+//   }
+// });
+
+// bot.command('closePosition', async ctx => {
+//   const symbol = 'ETHUSDT';
+//   try {
+//     const positionMode = await bybitClient.getPositionInfo({
+//       category: 'linear',
+//       symbol,
+//     });
+//
+//     console.log('positionMode: ', JSON.stringify(positionMode));
+//
+//     const position = positionMode.result.list.find(p => Math.abs(Number(p.size)) > 0);
+//
+//     console.log('position: ', JSON.stringify(position));
+//
+//     const size = position!.size; // Используем строку напрямую из API
+//     const side = position!.side === 'Buy' ? 'Sell' : 'Buy';
+//
+//     const response = await bybitClient.submitOrder({
+//       category: 'linear',
+//       symbol,
+//       side,
+//       orderType: 'Market',
+//       qty: size,
+//       reduceOnly: true,
+//     });
+//   } catch (error) {
+//     console.error('Error sending log file:', error);
+//     await ctx.reply('❌ Error sending log file');
+//   }
+// });
 
 bot.command('download_logs', async ctx => {
   try {
@@ -144,10 +245,22 @@ bot.command('download_logs', async ctx => {
 bot.command('stop', async ctx => {
   subscribers.delete(ctx.chat.id);
   console.log(`➖ Unsubscribed chat ${ctx.chat.id}`);
+  tradingState.disable();
+  // 🔴 ОСТАНАВЛИВАЕМ ВОТЧЕРЫ
+  if (stopWatchers) {
+    stopWatchers();
+    stopWatchers = null;
+  }
 
-  await ctx.reply('🛑 Notifications stopped', {
-    reply_markup: mainKeyboard,
-  });
+  console.log(`🛑 BOT STOPPED by chat ${ctx.chat.id}`);
+
+  await ctx.reply(
+    '🛑 Бот остановлен\n\n' +
+      '• торговля выключена\n' +
+      '• вотчеры остановлены\n' +
+      '• новые сделки не открываются',
+    { reply_markup: mainKeyboard }
+  );
 });
 
 bot.command('status', ctx => {
@@ -238,7 +351,6 @@ bot
   .start({
     onStart: async info => {
       console.log(`🤖 Bot @${info.username} is running!`);
-      await startWatchersOnce();
     },
   })
   .then();

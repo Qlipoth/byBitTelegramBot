@@ -2,6 +2,7 @@
 import { calculatePositionSizing } from './paperPositionManager.js';
 import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
+import { tradingState } from '../core/tradingState.js';
 
 interface ActivePosition {
   symbol: string;
@@ -30,6 +31,11 @@ export async function openRealPosition(params: {
   balance: number;
 }) {
   const { symbol, side, price, stopPrice, balance } = params;
+
+  if (!tradingState.isEnabled()) {
+    console.warn('[EXECUTION] Trading disabled');
+    return false;
+  }
   const SLIPPAGE_TOLERANCE = 0.002; // 0.2% защиты
 
   // 1. Считаем риск и объем (твоя функция)
@@ -73,7 +79,7 @@ export async function openRealPosition(params: {
       orderType: 'Limit',
       price: roundStep(limitPrice, tickSize).toString(),
       qty: qty.toString(),
-      timeInForce: 'IOC', // IOC - либо сейчас по этой цене, либо отмена
+      timeInForce: 'GTC',
       stopLoss: roundStep(stopPrice, tickSize).toString(),
       takeProfit: roundStep(tpPrice, tickSize).toString(),
       slTriggerBy: 'LastPrice',
@@ -86,37 +92,24 @@ export async function openRealPosition(params: {
       console.log(`❌ Ошибка биржи [${order.retCode}]: ${order.retMsg}`);
       return false; // Выходим из функции, так как ордера нет
     }
+    // --- УПРОЩЕННАЯ ЛОГИКА БЕЗ ЗАПРОСА ИСТОРИИ ---
 
-    // Запрашиваем историю этого конкретного ордера
-    const history = await bybitClient.getHistoricOrders({
-      category: 'linear',
-      symbol,
-      orderId: order.result.orderId,
-    });
+    // Вместо истории берем нашу расчетную цену входа (limitPrice)
+    // или текущую цену snapshot (price). Для учета комиссий можно взять чуть хуже.
+    const entryPrice = limitPrice;
 
-    const orderData = history.result.list[0];
-
-    if (!orderData) {
-      console.log('❌ Ошибка получения истории', orderData);
-      return false;
-    }
-    const execQty = parseFloat(orderData.cumExecQty || '0');
-    const execValue = parseFloat(orderData.cumExecValue || '0');
-
-    const avgPrice = execValue / execQty;
-
-    // СОХРАНЯЕМ В ЛОКАЛЬНУЮ ПАМЯТЬ
+    // СОХРАНЯЕМ В ЛОКАЛЬНУЮ ПАМЯТЬ СРАЗУ
     activePositions.set(symbol, {
       symbol,
       side,
-      entryPrice: avgPrice,
+      entryPrice: entryPrice,
       stopLoss: stopPrice,
       takeProfit: tpPrice,
-      qty: execQty,
+      qty: qty, // Берем расчетное кол-во, так как ордер GTC/IOC
       entryTime: Date.now(),
     });
 
-    console.log(`✅ [${symbol}] REAL POSITION OPENED at ${avgPrice}`);
+    console.log(`✅ [${symbol}] Ожидаем исполнение по цене ${entryPrice}. Записано в память.`);
     return true;
   } catch (e) {
     console.error(`❌ Ошибка openRealPosition:`, e);

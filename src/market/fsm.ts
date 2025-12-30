@@ -1,4 +1,6 @@
 // src/market/fsm.ts
+import { tradingState } from '../core/tradingState.js';
+
 export type TradeSide = 'LONG' | 'SHORT';
 
 export type TradeState =
@@ -65,6 +67,10 @@ export function fsmStep(
   input: { signal: string; confirmed: boolean; now: number; exitSignal: boolean }
 ): { action: FsmAction } {
   const { signal, confirmed, now, exitSignal } = input;
+
+  if (!tradingState.isEnabled()) {
+    return { action: 'NONE' };
+  }
 
   switch (fsm.state) {
     case 'IDLE':

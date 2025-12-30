@@ -1,4 +1,5 @@
 import type { MarketSnapshot } from './types.js';
+import { VIRTUAL_BALANCE_USD } from './constants.market.js';
 
 export type PaperSide = 'LONG' | 'SHORT';
 
@@ -85,7 +86,8 @@ export function calculatePositionSizing(
   }
 
   // 4️⃣ Размер позиции
-  const sizeUsd = (balance * maxPriceRiskPct) / stopPct;
+  const riskBase = Math.min(balance, VIRTUAL_BALANCE_USD);
+  const sizeUsd = (riskBase * maxPriceRiskPct) / stopPct;
   console.log(
     `[calculatePositionSizing] Calculated sizeUsd: ${sizeUsd} (balance: ${balance}, maxPriceRiskPct: ${maxPriceRiskPct}, stopPct: ${stopPct})`
   );

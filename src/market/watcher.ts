@@ -30,6 +30,7 @@ import { getCvdThreshold } from './candleBuilder.js';
 import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
 import { activePositions, closeRealPosition, openRealPosition } from './realTradeManager.js';
+import { tradingState } from '../core/tradingState.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -269,6 +270,10 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // 2. ВХОД В ПОЗИЦИЮ (ENTER_MARKET)
       // Важно: проверяем экшен ENTER_MARKET из нашего нового FSM
       if (action === 'ENTER_MARKET' && !hasOpen) {
+        if (!tradingState.isEnabled()) {
+          console.log('[WATCHER] Trading disabled — skip ENTER_MARKET');
+          return; // ← выход ТОЛЬКО из текущей итерации символа
+        }
         // Сохраняем цену входа в контекст FSM (нужно для расчета PnL в shouldExitPosition)
         fsm.entryPrice = snap.price;
 

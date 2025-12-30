@@ -227,3 +227,4 @@ export const ENTRY_FEE_PCT = 0.00055; // 0.055% (Taker)
 export const EXIT_FEE_PCT = 0.00055; // 0.055% (Taker)
 export const TOTAL_FEE_PCT = ENTRY_FEE_PCT + EXIT_FEE_PCT; // 0.0011 (или 0.11%)
 export const MIN_SCORE = 48;
+export const VIRTUAL_BALANCE_USD = 1000;
