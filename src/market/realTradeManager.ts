@@ -4,7 +4,7 @@ import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
 
-interface ActivePosition {
+export interface ActivePosition {
   symbol: string;
   side: 'LONG' | 'SHORT';
   entryPrice: number;
@@ -14,153 +14,156 @@ interface ActivePosition {
   entryTime: number;
 }
 
-export const activePositions = new Map<string, ActivePosition>();
+export class RealTradeManager {
+  private readonly activePositions = new Map<string, ActivePosition>();
 
-// Комиссия (Taker + Taker)
-const TOTAL_FEE_PCT = 0.0011;
-const RR_RATIO = 3;
+  // Комиссия (Taker + Taker)
+  private readonly TOTAL_FEE_PCT = 0.0011;
+  private readonly RR_RATIO = 3;
+  private readonly SLIPPAGE_TOLERANCE = 0.002; // 0.2% защиты
 
-// ==========================================
-// 🚀 ОТКРЫТИЕ ПОЗИЦИИ (LIMIT + IOC)
-// ==========================================
-export async function openRealPosition(params: {
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  price: number; // Цена из снапшота (текущая)
-  stopPrice: number;
-  balance: number;
-}) {
-  const { symbol, side, price, stopPrice, balance } = params;
-
-  if (!tradingState.isEnabled()) {
-    console.warn('[EXECUTION] Trading disabled');
-    return false;
-  }
-  const SLIPPAGE_TOLERANCE = 0.002; // 0.2% защиты
-
-  // 1. Считаем риск и объем (твоя функция)
-  const sizing = calculatePositionSizing(balance, price, stopPrice);
-  if (!sizing) {
-    console.log('❌ Не расчитан размер позиции', sizing);
-    return false;
+  hasPosition(symbol: string) {
+    return this.activePositions.has(symbol);
   }
 
-  try {
-    // 2. Получаем спецификации монеты (округления)
-    const instrInfo = await bybitClient.getInstrumentsInfo({ category: 'linear', symbol });
-    const instrument = instrInfo.result.list[0];
-    if (!instrument) {
-      console.log('Не получен инструмент');
-      return false;
-    }
-    const tickSize = parseFloat(instrument.priceFilter.tickSize);
-    const qtyStep = parseFloat(instrument.lotSizeFilter.qtyStep);
+  getPosition(symbol: string) {
+    return this.activePositions.get(symbol);
+  }
 
-    // 3. Расчет параметров ордера
-    const qty = roundStep(sizing.sizeUsd / price, qtyStep);
-    if (qty <= 0) {
-      console.log('❌ Ошибка расчета ордера', qty);
+  // ==========================================
+  // 🚀 ОТКРЫТИЕ ПОЗИЦИИ (LIMIT + GTC)
+  // ==========================================
+  async openPosition(params: {
+    symbol: string;
+    side: 'LONG' | 'SHORT';
+    price: number; // Цена из снапшота (текущая)
+    stopPrice: number;
+    balance: number;
+  }) {
+    const { symbol, side, price, stopPrice, balance } = params;
+
+    if (!tradingState.isEnabled()) {
+      console.warn('[EXECUTION] Trading disabled');
       return false;
     }
 
-    // Защитный лимит (чуть хуже рынка)
-    const limitPrice =
-      side === 'LONG' ? price * (1 + SLIPPAGE_TOLERANCE) : price * (1 - SLIPPAGE_TOLERANCE);
-
-    // Тейк-профит (от цены лимита)
-    const takePct = sizing.stopPct * RR_RATIO + TOTAL_FEE_PCT;
-    const tpPrice = side === 'LONG' ? price * (1 + takePct) : price * (1 - takePct);
-
-    // 4. ОТПРАВКА ОРДЕРА НА БИРЖУ
-    const order = await bybitClient.submitOrder({
-      category: 'linear',
-      symbol,
-      side: side === 'LONG' ? 'Buy' : 'Sell',
-      orderType: 'Limit',
-      price: roundStep(limitPrice, tickSize).toString(),
-      qty: qty.toString(),
-      timeInForce: 'GTC',
-      stopLoss: roundStep(stopPrice, tickSize).toString(),
-      takeProfit: roundStep(tpPrice, tickSize).toString(),
-      slTriggerBy: 'LastPrice',
-    });
-
-    // 5. ПРОВЕРКА ИСПОЛНЕНИЯ
-
-    if (order.retCode !== 0) {
-      // Если код НЕ 0, значит случилась беда
-      console.log(`❌ Ошибка биржи [${order.retCode}]: ${order.retMsg}`);
-      return false; // Выходим из функции, так как ордера нет
+    // 1. Считаем риск и объем (твоя функция)
+    const sizing = calculatePositionSizing(balance, price, stopPrice);
+    if (!sizing) {
+      console.log('❌ Не расчитан размер позиции', sizing);
+      return false;
     }
-    // --- УПРОЩЕННАЯ ЛОГИКА БЕЗ ЗАПРОСА ИСТОРИИ ---
 
-    // Вместо истории берем нашу расчетную цену входа (limitPrice)
-    // или текущую цену snapshot (price). Для учета комиссий можно взять чуть хуже.
-    const entryPrice = limitPrice;
+    try {
+      // 2. Получаем спецификации монеты (округления)
+      const instrInfo = await bybitClient.getInstrumentsInfo({ category: 'linear', symbol });
+      const instrument = instrInfo.result.list[0];
+      if (!instrument) {
+        console.log('Не получен инструмент');
+        return false;
+      }
+      const tickSize = parseFloat(instrument.priceFilter.tickSize);
+      const qtyStep = parseFloat(instrument.lotSizeFilter.qtyStep);
 
-    // СОХРАНЯЕМ В ЛОКАЛЬНУЮ ПАМЯТЬ СРАЗУ
-    activePositions.set(symbol, {
-      symbol,
-      side,
-      entryPrice: entryPrice,
-      stopLoss: stopPrice,
-      takeProfit: tpPrice,
-      qty: qty, // Берем расчетное кол-во, так как ордер GTC/IOC
-      entryTime: Date.now(),
-    });
+      // 3. Расчет параметров ордера
+      const qty = roundStep(sizing.sizeUsd / price, qtyStep);
+      if (qty <= 0) {
+        console.log('❌ Ошибка расчета ордера', qty);
+        return false;
+      }
 
-    console.log(`✅ [${symbol}] Ожидаем исполнение по цене ${entryPrice}. Записано в память.`);
-    return true;
-  } catch (e) {
-    console.error(`❌ Ошибка openRealPosition:`, e);
-    return false;
+      // Защитный лимит (чуть хуже рынка)
+      const limitPrice =
+        side === 'LONG'
+          ? price * (1 + this.SLIPPAGE_TOLERANCE)
+          : price * (1 - this.SLIPPAGE_TOLERANCE);
+
+      // Тейк-профит (от цены лимита)
+      const takePct = sizing.stopPct * this.RR_RATIO + this.TOTAL_FEE_PCT;
+      const tpPrice = side === 'LONG' ? price * (1 + takePct) : price * (1 - takePct);
+
+      // 4. ОТПРАВКА ОРДЕРА НА БИРЖУ
+      const order = await bybitClient.submitOrder({
+        category: 'linear',
+        symbol,
+        side: side === 'LONG' ? 'Buy' : 'Sell',
+        orderType: 'Limit',
+        price: roundStep(limitPrice, tickSize).toString(),
+        qty: qty.toString(),
+        timeInForce: 'GTC',
+        stopLoss: roundStep(stopPrice, tickSize).toString(),
+        takeProfit: roundStep(tpPrice, tickSize).toString(),
+        slTriggerBy: 'LastPrice',
+      });
+
+      if (order.retCode !== 0) {
+        console.log(`❌ Ошибка биржи [${order.retCode}]: ${order.retMsg}`);
+        return false;
+      }
+
+      const entryPrice = limitPrice;
+
+      this.activePositions.set(symbol, {
+        symbol,
+        side,
+        entryPrice: entryPrice,
+        stopLoss: stopPrice,
+        takeProfit: tpPrice,
+        qty: qty,
+        entryTime: Date.now(),
+      });
+
+      console.log(`✅ [${symbol}] Ожидаем исполнение по цене ${entryPrice}. Записано в память.`);
+      return true;
+    } catch (e) {
+      console.error(`❌ Ошибка openPosition:`, e);
+      return false;
+    }
+  }
+
+  // ==========================================
+  // 🏁 ЗАКРЫТИЕ ПОЗИЦИИ (MARKET + REDUCE ONLY)
+  // ==========================================
+  async closePosition(symbol: string) {
+    try {
+      const posResp = await bybitClient.getPositionInfo({
+        category: 'linear',
+        symbol,
+      });
+
+      const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
+
+      // Если на бирже пусто — чистим локально и выходим
+      if (!position) {
+        console.warn(`⚠️ [${symbol}] На бирже позиции нет. Синхронизируем локальный стейт.`);
+        this.activePositions.delete(symbol);
+        return;
+      }
+
+      const size = position.size;
+      const side = position.side === 'Buy' ? 'Sell' : 'Buy';
+
+      const response = await bybitClient.submitOrder({
+        category: 'linear',
+        symbol,
+        side,
+        orderType: 'Market',
+        qty: size,
+        reduceOnly: true,
+      });
+
+      if (response.retCode === 0) {
+        this.activePositions.delete(symbol);
+        console.log(`🏁 [${symbol}] Позиция успешно закрыта на бирже. Объем: ${size}`);
+      } else {
+        console.error(
+          `❌ [${symbol}] Биржа отклонила закрытие! Код: ${response.retCode}, Инфо: ${response.retMsg}`
+        );
+      }
+    } catch (e) {
+      console.error(`❌ Критическая ошибка при закрытии ${symbol}:`, e);
+    }
   }
 }
 
-// ==========================================
-// 🏁 ЗАКРЫТИЕ ПОЗИЦИИ (MARKET + REDUCE ONLY)
-// ==========================================
-export async function closeRealPosition(symbol: string) {
-  try {
-    const posResp = await bybitClient.getPositionInfo({
-      category: 'linear',
-      symbol,
-    });
-
-    const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
-
-    // Если на бирже пусто — чистим локально и выходим
-    if (!position) {
-      console.warn(`⚠️ [${symbol}] На бирже позиции нет. Синхронизируем локальный стейт.`);
-      activePositions.delete(symbol);
-      return;
-    }
-
-    const size = position.size; // Используем строку напрямую из API
-    const side = position.side === 'Buy' ? 'Sell' : 'Buy';
-
-    const response = await bybitClient.submitOrder({
-      category: 'linear',
-      symbol,
-      side,
-      orderType: 'Market',
-      qty: size,
-      reduceOnly: true,
-    });
-
-    // ПРОВЕРКА: Закрылось ли на самом деле?
-    if (response.retCode === 0) {
-      activePositions.delete(symbol);
-      console.log(`🏁 [${symbol}] Позиция успешно закрыта на бирже. Объем: ${size}`);
-    } else {
-      // Если retCode не 0, значит позиция ВСЕ ЕЩЕ ОТКРЫТА
-      console.error(
-        `❌ [${symbol}] Биржа отклонила закрытие! Код: ${response.retCode}, Инфо: ${response.retMsg}`
-      );
-      // Мы НЕ удаляем из activePositions, чтобы Watcher попробовал еще раз или выдал алерт
-    }
-  } catch (e) {
-    console.error(`❌ Критическая ошибка при закрытии ${symbol}:`, e);
-    // В случае сетевой ошибки позиция остается в activePositions для повтора
-  }
-}
+export const realTradeManager = new RealTradeManager();

@@ -29,7 +29,7 @@ import { getCVDLastMinutes } from './cvdTracker.js';
 import { getCvdThreshold } from './candleBuilder.js';
 import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
-import { activePositions, closeRealPosition, openRealPosition } from './realTradeManager.js';
+import { realTradeManager } from './realTradeManager.js';
 import { tradingState } from '../core/tradingState.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
@@ -233,9 +233,9 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         console.log('2) confirmed value:', confirmed);
       }
 
-      const hasOpen = activePositions.has(symbol);
+      const hasOpen = realTradeManager.hasPosition(symbol);
 
-      const currentPos = activePositions.get(symbol);
+      const currentPos = realTradeManager.getPosition(symbol);
 
       console.log('3) currentPos:', JSON.stringify(currentPos));
 
@@ -290,7 +290,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
           `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance}`
         );
 
-        const success = await openRealPosition({
+        const success = await realTradeManager.openPosition({
           symbol,
           side: fsm.side!,
           price: snap.price,
@@ -316,10 +316,10 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // 3. ВЫХОД ИЗ ПОЗИЦИИ (EXIT_MARKET)
       // ВЫХОД ИЗ ПОЗИЦИИ
       if (action === 'EXIT_MARKET' && hasOpen) {
-        const pos = activePositions.get(symbol);
+        const pos = realTradeManager.getPosition(symbol);
 
         // ВАЖНО: Добавляем await
-        await closeRealPosition(symbol);
+        await realTradeManager.closePosition(symbol);
 
         const pnl = pos
           ? (
