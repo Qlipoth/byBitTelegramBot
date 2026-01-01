@@ -22,6 +22,9 @@ export const bybitClient = new RestClientV5({
   secret,
   demoTrading: true,
   testnet: false, // Set to true for testnet
+  enable_time_sync: true,
+  sync_interval_ms: 60_000, // раз в минуту
+  recv_window: 20000,
 });
 
 export const ws = new WebsocketClient({
@@ -110,10 +113,10 @@ export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]>
 
     // Define the priority symbols we always want to include
 
-    // Filter and sort all USDT pairs by volume
+    // Filter and sort all USDT pairs by turnover (quote volume) to avoid bias toward low-priced coins
     const allUsdtPairs = response.result.list
       .filter(ticker => ticker.symbol.endsWith('USDT'))
-      .sort((a, b) => parseFloat(b.volume24h) - parseFloat(a.volume24h));
+      .sort((a, b) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h));
 
     // Get priority symbols that exist in the response
     const priorityPairs = PRIORITY_COINS.map(symbol =>

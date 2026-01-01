@@ -104,7 +104,20 @@ export class RealTradeManager {
       symbol,
     });
 
-    const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
+    if (posResp.retCode !== 0) {
+      console.error(
+        `❌ [${symbol}] getPositionInfo failed: retCode=${posResp.retCode} retMsg=${posResp.retMsg}`
+      );
+      return;
+    }
+
+    const list = posResp.result?.list;
+    if (!Array.isArray(list)) {
+      console.error(`❌ [${symbol}] getPositionInfo: result.list is missing or invalid`);
+      return;
+    }
+
+    const position = list.find(p => Math.abs(Number(p.size)) > 0);
     if (!position) {
       this.activePositions.delete(symbol);
       return;
@@ -150,7 +163,20 @@ export class RealTradeManager {
       symbol,
     });
 
-    const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
+    if (posResp.retCode !== 0) {
+      console.error(
+        `❌ [${symbol}] getPositionInfo failed: retCode=${posResp.retCode} retMsg=${posResp.retMsg}`
+      );
+      return;
+    }
+
+    const list = posResp.result?.list;
+    if (!Array.isArray(list)) {
+      console.error(`❌ [${symbol}] getPositionInfo: result.list is missing or invalid`);
+      return;
+    }
+
+    const position = list.find(p => Math.abs(Number(p.size)) > 0);
     if (position) {
       const size = Math.abs(Number(position.size));
       const avgPrice = Number((position as any).avgPrice || (position as any).entryPrice || 0);
@@ -382,7 +408,20 @@ export class RealTradeManager {
         symbol,
       });
 
-      const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
+      if (posResp.retCode !== 0) {
+        console.error(
+          `❌ [${symbol}] getPositionInfo failed: retCode=${posResp.retCode} retMsg=${posResp.retMsg}`
+        );
+        return;
+      }
+
+      const list = posResp.result?.list;
+      if (!Array.isArray(list)) {
+        console.error(`❌ [${symbol}] getPositionInfo: result.list is missing or invalid`);
+        return;
+      }
+
+      const position = list.find(p => Math.abs(Number(p.size)) > 0);
 
       // Если на бирже пусто — чистим локально и выходим
       if (!position) {
