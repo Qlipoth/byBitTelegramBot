@@ -1,5 +1,4 @@
 import type { SYMBOLS } from './constants.market.js';
-import { bybitClient } from '../services/bybit.js';
 
 export interface MarketSnapshot {
   symbol: string;
@@ -93,4 +92,3 @@ export interface ConfirmEntryParams {
 }
 
 export type SymbolValue = (typeof SYMBOLS)[keyof typeof SYMBOLS];
-export type CancelOrderParams = Parameters<typeof bybitClient.cancelOrder>[0];

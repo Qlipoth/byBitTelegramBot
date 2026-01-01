@@ -45,6 +45,12 @@ export async function initializeMarketWatcher(onAlert: (msg: string) => void) {
   const symbols = await getTopLiquidSymbols(COINS_COUNT);
   console.log(`🔄 Tracking ${symbols.length} symbols`);
 
+  try {
+    await realTradeManager.bootstrap(symbols);
+  } catch (e) {
+    console.error('[WATCHER] realTradeManager.bootstrap failed:', e);
+  }
+
   const intervals = symbols.map(symbol => startMarketWatcher(symbol, msg => onAlert(msg)));
   ws.subscribeV5(
     symbols.map(s => `publicTrade.${s}`),
@@ -99,6 +105,14 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         tradeFSMBySymbol.set(symbol, createFSM());
       }
       const fsm = tradeFSMBySymbol.get(symbol)!;
+
+      const restoredPos = realTradeManager.getPosition(symbol);
+      if (restoredPos && fsm.state !== 'OPEN') {
+        fsm.state = 'OPEN';
+        fsm.side = restoredPos.side;
+        fsm.entryPrice = restoredPos.entryPrice;
+        fsm.openedAt = Date.now();
+      }
 
       const snaps = getSnapshots(symbol);
       if (snaps.length < 5) return;
@@ -295,10 +309,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
 
         const balance = await getCurrentBalance();
 
-        console.log(
-          `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance}`
-        );
-
         const success = await realTradeManager.openPosition({
           symbol,
           side: fsm.side!,
@@ -308,6 +318,9 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         });
 
         if (success) {
+          console.log(
+            `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance}`
+          );
           onAlert(
             `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
               `Тип: ${fsm.side === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}\n` +
@@ -317,6 +330,9 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
           );
           state.lastConfirmationAt = now;
         } else {
+          console.warn(
+            `[TRADE] ❌ ENTER FAILED for ${symbol} | side=${fsm.side} | Phase=${state.phase} | balance=${balance}`
+          );
           // Если не зашли (проскальзывание), сбрасываем FSM, чтобы не висел
           fsmStep(fsm, { signal: 'NONE', confirmed: false, now, exitSignal: true });
         }

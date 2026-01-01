@@ -3,7 +3,6 @@ import { calculatePositionSizing } from './paperPositionManager.js';
 import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
-import type { CancelOrderParams } from './types.js';
 
 export interface ActivePosition {
   symbol: string;
@@ -55,6 +54,85 @@ export class RealTradeManager {
     return this.pendingOrders.get(symbol);
   }
 
+  async bootstrap(symbols: string[]) {
+    this.pendingOrders.clear();
+    for (const symbol of symbols) {
+      try {
+        await this.cancelBotActiveOrders(symbol);
+        await this.syncExchangePosition(symbol);
+      } catch (e) {
+        console.error(`❌ [BOOTSTRAP] syncExchangePosition failed (${symbol}):`, e);
+      }
+    }
+  }
+
+  private async cancelBotActiveOrders(symbol: string) {
+    type ActiveOrdersParams = Parameters<typeof bybitClient.getActiveOrders>[0];
+    const activeParams = {
+      category: 'linear',
+      symbol,
+    } satisfies ActiveOrdersParams;
+
+    const active = await bybitClient.getActiveOrders(activeParams);
+    const list = active.result?.list ?? [];
+
+    const botOrders = list.filter(o => String((o as any).orderLinkId || '').startsWith('bot_'));
+    if (!botOrders.length) return;
+
+    for (const o of botOrders) {
+      const orderId = String((o as any).orderId || '');
+      if (!orderId) continue;
+
+      try {
+        type CancelOrderParams = Parameters<typeof bybitClient.cancelOrder>[0];
+        const cancelParams = {
+          category: 'linear',
+          symbol,
+          orderId,
+        } satisfies CancelOrderParams;
+
+        await bybitClient.cancelOrder(cancelParams);
+      } catch (e) {
+        console.error(`❌ [BOOTSTRAP] cancelOrder failed (${symbol}):`, e);
+      }
+    }
+  }
+
+  async syncExchangePosition(symbol: string) {
+    const posResp = await bybitClient.getPositionInfo({
+      category: 'linear',
+      symbol,
+    });
+
+    const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
+    if (!position) {
+      this.activePositions.delete(symbol);
+      return;
+    }
+
+    const size = Math.abs(Number(position.size));
+    const side = position.side === 'Buy' ? 'LONG' : 'SHORT';
+    const avgPrice = Number((position as any).avgPrice || (position as any).entryPrice || 0);
+    const entryPrice = avgPrice > 0 ? avgPrice : NaN;
+    if (!Number.isFinite(entryPrice)) return;
+
+    const slRaw = Number(position.stopLoss || 0);
+    const tpRaw = Number(position.takeProfit || 0);
+    const stopLoss = slRaw > 0 ? slRaw : Number.NaN;
+    const takeProfit = tpRaw > 0 ? tpRaw : Number.NaN;
+
+    const existing = this.activePositions.get(symbol);
+    this.activePositions.set(symbol, {
+      symbol,
+      side,
+      entryPrice,
+      stopLoss,
+      takeProfit,
+      qty: size,
+      entryTime: existing?.entryTime ?? Date.now(),
+    });
+  }
+
   private async sleep(ms: number) {
     await new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -78,13 +156,18 @@ export class RealTradeManager {
       const avgPrice = Number((position as any).avgPrice || (position as any).entryPrice || 0);
       const entryPrice = avgPrice > 0 ? avgPrice : NaN;
 
+      const slRaw = Number((position as any).stopLoss || 0);
+      const tpRaw = Number((position as any).takeProfit || 0);
+      const stopLoss = slRaw > 0 ? slRaw : pending.stopLoss;
+      const takeProfit = tpRaw > 0 ? tpRaw : pending.takeProfit;
+
       if (Number.isFinite(entryPrice)) {
         this.activePositions.set(symbol, {
           symbol,
           side: pending.side,
           entryPrice,
-          stopLoss: pending.stopLoss,
-          takeProfit: pending.takeProfit,
+          stopLoss,
+          takeProfit,
           qty: size,
           entryTime: Date.now(),
         });
@@ -278,6 +361,7 @@ export class RealTradeManager {
       const pending = this.pendingOrders.get(symbol);
       if (pending) {
         try {
+          type CancelOrderParams = Parameters<typeof bybitClient.cancelOrder>[0];
           const cancelParams = {
             category: 'linear',
             symbol,
