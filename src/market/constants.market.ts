@@ -104,10 +104,10 @@ export const LIQUID_IMPULSE_THRESHOLDS = {
 
   PRICE_STABLE_PCT: 0.18,
   PRICE_DROP_PCT: 0.4,
-  PRICE_SURGE_PCT: 0.5,
+  PRICE_SURGE_PCT: 0.3,
 
-  OI_INCREASE_PCT: 0.4,
-  OI_SURGE_PCT: 1.0,
+  OI_INCREASE_PCT: 0.3,
+  OI_SURGE_PCT: 0.5,
 } as const;
 
 // =====================

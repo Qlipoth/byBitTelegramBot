@@ -4,6 +4,7 @@ import { PRIORITY_COINS } from '../market/constants.market.js';
 import { initCVDTracker } from '../market/cvdTracker.js';
 
 import * as dotenv from 'dotenv';
+import dayjs from 'dayjs';
 
 dotenv.config();
 
@@ -241,4 +242,151 @@ export async function getCurrentBalance(): Promise<number> {
     console.error('Ошибка при получении баланса:', error);
     return 0;
   }
+}
+
+export interface ClosedPnlStatsBySymbol {
+  symbol: string;
+  trades: number;
+  wins: number;
+  losses: number;
+  pnlTotalUsd: number;
+}
+
+export interface ClosedPnlStats {
+  startTime: number;
+  endTime: number;
+  trades: number;
+  wins: number;
+  losses: number;
+  pnlTotalUsd: number;
+  pnlWinUsd: number;
+  pnlLossUsd: number;
+  bySymbol: ClosedPnlStatsBySymbol[];
+}
+
+async function fetchClosedPnLRecords(params: {
+  category: 'linear' | 'inverse';
+  startTime: number;
+  endTime: number;
+}): Promise<Record<string, any>[]> {
+  const { category, startTime, endTime } = params;
+  const all: Record<string, any>[] = [];
+
+  let cursor: string | undefined;
+  for (;;) {
+    const resp = await bybitClient.getClosedPnL({
+      category,
+      startTime,
+      endTime,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    } as any);
+
+    if (resp.retCode !== 0) {
+      throw new Error(`getClosedPnL failed: retCode=${resp.retCode} retMsg=${resp.retMsg}`);
+    }
+
+    const list = (resp as any)?.result?.list;
+    if (Array.isArray(list) && list.length) {
+      all.push(...list);
+    }
+
+    const next = (resp as any)?.result?.nextPageCursor;
+    if (!next) break;
+    if (next === cursor) break;
+    cursor = next;
+  }
+
+  return all;
+}
+
+export async function getClosedPnLStats(params: {
+  startTime: number;
+  endTime: number;
+  category?: 'linear' | 'inverse';
+}): Promise<ClosedPnlStats> {
+  const category = params.category ?? 'linear';
+  const startTime = params.startTime;
+  const endTime = params.endTime;
+
+  const start = dayjs(startTime);
+  const end = dayjs(endTime);
+  const chunks: Array<{ start: number; end: number }> = [];
+
+  for (let from = start; from.valueOf() < end.valueOf(); from = from.add(7, 'day')) {
+    const chunkStart = from;
+    const rawChunkEnd = from.add(7, 'day').subtract(1, 'millisecond');
+    const chunkEnd = rawChunkEnd.isAfter(end) ? end : rawChunkEnd;
+    chunks.push({ start: chunkStart.valueOf(), end: chunkEnd.valueOf() });
+  }
+
+  const records: Record<string, any>[] = [];
+  for (const chunk of chunks) {
+    const part = await fetchClosedPnLRecords({
+      category,
+      startTime: chunk.start,
+      endTime: chunk.end,
+    });
+    records.push(...part);
+  }
+
+  let trades = 0;
+  let wins = 0;
+  let losses = 0;
+  let pnlTotalUsd = 0;
+  let pnlWinUsd = 0;
+  let pnlLossUsd = 0;
+
+  const bySymbol = new Map<string, ClosedPnlStatsBySymbol>();
+
+  for (const r of records) {
+    const symbol = String(r?.symbol ?? '').trim();
+    if (!symbol) continue;
+
+    const pnl = Number(r?.closedPnl ?? 0);
+    if (!Number.isFinite(pnl)) continue;
+
+    trades += 1;
+    pnlTotalUsd += pnl;
+    if (pnl > 0) {
+      wins += 1;
+      pnlWinUsd += pnl;
+    } else if (pnl < 0) {
+      losses += 1;
+      pnlLossUsd += pnl;
+    }
+
+    const existing = bySymbol.get(symbol) ?? {
+      symbol,
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      pnlTotalUsd: 0,
+    };
+
+    existing.trades += 1;
+    existing.pnlTotalUsd += pnl;
+    if (pnl > 0) existing.wins += 1;
+    if (pnl < 0) existing.losses += 1;
+
+    bySymbol.set(symbol, existing);
+  }
+
+  const bySymbolArr = [...bySymbol.values()].sort((a, b) => {
+    const pnlDiff = Math.abs(b.pnlTotalUsd) - Math.abs(a.pnlTotalUsd);
+    if (pnlDiff !== 0) return pnlDiff;
+    return b.trades - a.trades;
+  });
+
+  return {
+    startTime,
+    endTime,
+    trades,
+    wins,
+    losses,
+    pnlTotalUsd,
+    pnlWinUsd,
+    pnlLossUsd,
+    bySymbol: bySymbolArr,
+  };
 }

@@ -56,11 +56,11 @@ process.on('unhandledRejection', reason => {
 
 import { Bot, InputFile, Keyboard } from 'grammy';
 import * as dotenv from 'dotenv';
+import dayjs from 'dayjs';
 
-import { bybitClient, getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
+import { getClosedPnLStats, getMarketSnapshot, getTopLiquidSymbols } from '../services/bybit.js';
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT, LOG_PATH } from '../market/constants.market.js';
-import type { OrderParamsV5 } from 'bybit-api/lib/types/request/v5-trade.js';
 import { tradingState } from '../core/tradingState.js';
 
 const requiredEnvVars = ['BOT_TOKEN', 'BYBIT_API_KEY', 'BYBIT_SECRET_KEY'];
@@ -86,6 +86,7 @@ const mainKeyboard = new Keyboard()
   .text('/market')
   .row()
   .text('/status')
+  .text('/stats')
   .text('/stop')
   .text('/download_logs')
   .row()
@@ -269,6 +270,58 @@ bot.command('status', ctx => {
     `📊 Watching ${COINS_COUNT} coins\n` +
     `🔄 Updates every minute`;
   ctx.reply(status).then();
+});
+
+bot.command('stats', async ctx => {
+  const loadingMsg = await ctx.reply('🔄 Loading stats...');
+
+  try {
+    const start = dayjs(new Date(2025, 11, 31, 0, 0, 0, 0));
+    const end = dayjs();
+    const startTime = start.valueOf();
+    const endTime = end.valueOf();
+
+    const stats = await getClosedPnLStats({ startTime, endTime, category: 'linear' });
+
+    const winrate = stats.trades > 0 ? (stats.wins / stats.trades) * 100 : 0;
+
+    const topSymbols = stats.bySymbol.slice(0, 15);
+    const symbolsLines = topSymbols.length
+      ? topSymbols
+          .map(s => {
+            const pnl = s.pnlTotalUsd;
+            const sign = pnl > 0 ? '+' : '';
+            return `- \`${s.symbol}\`: ${s.trades} | PnL ${sign}${pnl.toFixed(2)}$`;
+          })
+          .join('\n')
+      : '- (нет данных)';
+
+    const pnlNet = stats.pnlTotalUsd;
+    const pnlNetSign = pnlNet > 0 ? '+' : '';
+    const earned = stats.pnlWinUsd;
+    const lost = Math.abs(stats.pnlLossUsd);
+
+    const msg =
+      `📈 *Статистика сделок*\n` +
+      `Период: *${start.format('DD.MM.YYYY')} → ${end.format('DD.MM.YYYY')}*\n\n` +
+      `Сделок: *${stats.trades}*\n` +
+      `Winrate: *${winrate.toFixed(2)}%* (W:${stats.wins} / L:${stats.losses})\n\n` +
+      `Заработано: *+${earned.toFixed(2)}$*\n` +
+      `Проёбано: *-${lost.toFixed(2)}$*\n` +
+      `Итого (Net): *${pnlNetSign}${pnlNet.toFixed(2)}$*\n\n` +
+      `Монеты (top ${topSymbols.length} по |PnL|):\n${symbolsLines}`;
+
+    await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, msg, {
+      parse_mode: 'Markdown',
+    });
+  } catch (e) {
+    console.error(e);
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      loadingMsg.message_id,
+      '❌ Error fetching stats (check API keys / account permissions)'
+    );
+  }
 });
 
 bot.command('market', async ctx => {

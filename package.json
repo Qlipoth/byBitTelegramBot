@@ -23,6 +23,7 @@
   "license": "ISC",
   "dependencies": {
     "bybit-api": "^4.4.2",
+    "dayjs": "^1.11.13",
     "dotenv": "^17.2.3",
     "grammy": "^1.38.4"
   },
