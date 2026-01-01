@@ -3,6 +3,7 @@ import { calculatePositionSizing } from './paperPositionManager.js';
 import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
+import type { CancelOrderParams } from './types.js';
 
 export interface ActivePosition {
   symbol: string;
@@ -14,8 +15,20 @@ export interface ActivePosition {
   entryTime: number;
 }
 
+interface PendingOrder {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  orderId: string | undefined;
+  orderLinkId: string;
+  qty: number;
+  stopLoss: number;
+  takeProfit: number;
+  createdAt: number;
+}
+
 export class RealTradeManager {
   private readonly activePositions = new Map<string, ActivePosition>();
+  private readonly pendingOrders = new Map<string, PendingOrder>();
 
   // Комиссия (Taker + Taker)
   private readonly TOTAL_FEE_PCT = 0.0011;
@@ -26,8 +39,93 @@ export class RealTradeManager {
     return this.activePositions.has(symbol);
   }
 
+  hasPending(symbol: string) {
+    return this.pendingOrders.has(symbol);
+  }
+
+  hasExposure(symbol: string) {
+    return this.hasPosition(symbol) || this.hasPending(symbol);
+  }
+
   getPosition(symbol: string) {
     return this.activePositions.get(symbol);
+  }
+
+  getPending(symbol: string) {
+    return this.pendingOrders.get(symbol);
+  }
+
+  private async sleep(ms: number) {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private generateOrderLinkId(symbol: string) {
+    return `bot_${symbol}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+  }
+
+  async syncSymbol(symbol: string) {
+    const pending = this.pendingOrders.get(symbol);
+    if (!pending) return;
+
+    const posResp = await bybitClient.getPositionInfo({
+      category: 'linear',
+      symbol,
+    });
+
+    const position = posResp.result.list.find(p => Math.abs(Number(p.size)) > 0);
+    if (position) {
+      const size = Math.abs(Number(position.size));
+      const avgPrice = Number((position as any).avgPrice || (position as any).entryPrice || 0);
+      const entryPrice = avgPrice > 0 ? avgPrice : NaN;
+
+      if (Number.isFinite(entryPrice)) {
+        this.activePositions.set(symbol, {
+          symbol,
+          side: pending.side,
+          entryPrice,
+          stopLoss: pending.stopLoss,
+          takeProfit: pending.takeProfit,
+          qty: size,
+          entryTime: Date.now(),
+        });
+        this.pendingOrders.delete(symbol);
+      }
+
+      return;
+    }
+
+    type ActiveOrdersParams = Parameters<typeof bybitClient.getActiveOrders>[0];
+    const activeParams = {
+      category: 'linear',
+      symbol,
+      orderLinkId: pending.orderLinkId,
+      ...(pending.orderId ? { orderId: pending.orderId } : {}),
+    } satisfies ActiveOrdersParams;
+
+    type HistoricOrdersParams = Parameters<typeof bybitClient.getHistoricOrders>[0];
+    const historicParams = {
+      category: 'linear',
+      symbol,
+      orderLinkId: pending.orderLinkId,
+      ...(pending.orderId ? { orderId: pending.orderId } : {}),
+    } satisfies HistoricOrdersParams;
+
+    const [active, historic] = await Promise.all([
+      bybitClient.getActiveOrders(activeParams),
+      bybitClient.getHistoricOrders(historicParams),
+    ]);
+
+    const activeOrder = active.result?.list?.[0];
+    if (activeOrder) return;
+
+    const histOrder = historic.result?.list?.[0];
+    if (!histOrder) return;
+
+    const status = String(histOrder.orderStatus || '').toLowerCase();
+    if (status.includes('cancel') || status.includes('reject')) {
+      this.pendingOrders.delete(symbol);
+      return;
+    }
   }
 
   // ==========================================
@@ -72,6 +170,11 @@ export class RealTradeManager {
         return false;
       }
 
+      if (this.hasExposure(symbol)) {
+        console.log(`⚠️ [${symbol}] Уже есть позиция или ожидающий ордер`);
+        return false;
+      }
+
       // Защитный лимит (чуть хуже рынка)
       const limitPrice =
         side === 'LONG'
@@ -82,6 +185,8 @@ export class RealTradeManager {
       const takePct = sizing.stopPct * this.RR_RATIO + this.TOTAL_FEE_PCT;
       const tpPrice = side === 'LONG' ? price * (1 + takePct) : price * (1 - takePct);
 
+      const orderLinkId = this.generateOrderLinkId(symbol);
+
       // 4. ОТПРАВКА ОРДЕРА НА БИРЖУ
       const order = await bybitClient.submitOrder({
         category: 'linear',
@@ -91,6 +196,7 @@ export class RealTradeManager {
         price: roundStep(limitPrice, tickSize).toString(),
         qty: qty.toString(),
         timeInForce: 'GTC',
+        orderLinkId,
         stopLoss: roundStep(stopPrice, tickSize).toString(),
         takeProfit: roundStep(tpPrice, tickSize).toString(),
         slTriggerBy: 'LastPrice',
@@ -101,22 +207,65 @@ export class RealTradeManager {
         return false;
       }
 
-      const entryPrice = limitPrice;
+      const orderId = order.result?.orderId;
 
-      this.activePositions.set(symbol, {
+      this.pendingOrders.set(symbol, {
         symbol,
         side,
-        entryPrice: entryPrice,
+        orderId,
+        orderLinkId,
+        qty,
         stopLoss: stopPrice,
         takeProfit: tpPrice,
-        qty: qty,
-        entryTime: Date.now(),
+        createdAt: Date.now(),
       });
 
-      console.log(`✅ [${symbol}] Ожидаем исполнение по цене ${entryPrice}. Записано в память.`);
-      return true;
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        try {
+          await this.syncSymbol(symbol);
+        } catch (e) {
+          console.error(`❌ [${symbol}] syncSymbol error:`, e);
+        }
+
+        if (this.activePositions.has(symbol)) {
+          const pos = this.activePositions.get(symbol)!;
+          console.log(
+            `✅ [${symbol}] Позиция подтверждена биржей. entry=${pos.entryPrice} qty=${pos.qty}`
+          );
+          return true;
+        }
+
+        if (!this.pendingOrders.has(symbol)) {
+          return false;
+        }
+
+        await this.sleep(500);
+      }
+
+      const stillPending = this.pendingOrders.get(symbol);
+      if (stillPending) {
+        try {
+          type CancelOrderParams = Parameters<typeof bybitClient.cancelOrder>[0];
+          const cancelParams = {
+            category: 'linear',
+            symbol,
+            orderLinkId: stillPending.orderLinkId,
+            ...(stillPending.orderId ? { orderId: stillPending.orderId } : {}),
+          } satisfies CancelOrderParams;
+
+          await bybitClient.cancelOrder(cancelParams);
+        } catch (e) {
+          console.error(`❌ [${symbol}] cancelOrder error:`, e);
+        } finally {
+          this.pendingOrders.delete(symbol);
+        }
+      }
+
+      return false;
     } catch (e) {
       console.error(`❌ Ошибка openPosition:`, e);
+      this.pendingOrders.delete(symbol);
       return false;
     }
   }
@@ -126,6 +275,24 @@ export class RealTradeManager {
   // ==========================================
   async closePosition(symbol: string) {
     try {
+      const pending = this.pendingOrders.get(symbol);
+      if (pending) {
+        try {
+          const cancelParams = {
+            category: 'linear',
+            symbol,
+            orderLinkId: pending.orderLinkId,
+            ...(pending.orderId ? { orderId: pending.orderId } : {}),
+          } satisfies CancelOrderParams;
+
+          await bybitClient.cancelOrder(cancelParams);
+        } catch (e) {
+          console.error(`❌ [${symbol}] cancelOrder error:`, e);
+        } finally {
+          this.pendingOrders.delete(symbol);
+        }
+      }
+
       const posResp = await bybitClient.getPositionInfo({
         category: 'linear',
         symbol,

@@ -233,7 +233,16 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         console.log('2) confirmed value:', confirmed);
       }
 
+      if (realTradeManager.hasPending(symbol)) {
+        try {
+          await realTradeManager.syncSymbol(symbol);
+        } catch (e) {
+          console.error(`[WATCHER] syncSymbol failed (${symbol}):`, e);
+        }
+      }
+
       const hasOpen = realTradeManager.hasPosition(symbol);
+      const hasExposure = realTradeManager.hasExposure(symbol);
 
       const currentPos = realTradeManager.getPosition(symbol);
 
@@ -269,7 +278,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
 
       // 2. ВХОД В ПОЗИЦИЮ (ENTER_MARKET)
       // Важно: проверяем экшен ENTER_MARKET из нашего нового FSM
-      if (action === 'ENTER_MARKET' && !hasOpen) {
+      if (action === 'ENTER_MARKET' && !hasExposure) {
         if (!tradingState.isEnabled()) {
           console.log('[WATCHER] Trading disabled — skip ENTER_MARKET');
           return; // ← выход ТОЛЬКО из текущей итерации символа
