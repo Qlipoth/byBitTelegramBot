@@ -171,6 +171,8 @@ const MARKET_CLASS_COEFFICIENTS = {
 
 type MarketClass = 'LIQUID' | 'MEDIUM' | 'VOLATILE';
 
+const insufficientDataWarned = new Set<string>();
+
 export function getMarketClass(symbol: string): MarketClass {
   if (['BTCUSDT', 'ETHUSDT'].includes(symbol)) return 'LIQUID';
   if (['SOLUSDT', 'BNBUSDT', 'XRPUSDT'].includes(symbol)) return 'MEDIUM';
@@ -185,12 +187,17 @@ export function getCvdThreshold(symbol: string) {
   const coeffs = MARKET_CLASS_COEFFICIENTS[marketClass];
 
   if (!atr || !price) {
-    console.warn(`Insufficient data for ${symbol}: price=${price}, atr=${atr}`);
+    if (!insufficientDataWarned.has(symbol)) {
+      console.warn(`Insufficient data for ${symbol}: price=${price}, atr=${atr}`);
+      insufficientDataWarned.add(symbol);
+    }
     return {
       moveThreshold: CONFIG.MIN_MOVE_THRESHOLD,
       cvdThreshold: CONFIG.MIN_CVD_THRESHOLD,
     };
   }
+
+  insufficientDataWarned.delete(symbol);
 
   const atrPct = Math.max((atr / price) * 100, CONFIG.MIN_ATR_PCT);
 
