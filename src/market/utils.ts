@@ -142,6 +142,11 @@ export function calculateEntryScores({
   } else if (state.phase === 'distribution') {
     shortScore += 15;
     details.phase = 15;
+  } else if (state.phase === 'trend') {
+    // В тренде тоже даем очки, если направление совпадает
+    if (isBull) longScore += 15;
+    if (isBear) shortScore += 15;
+    details.phase = 15;
   }
 
   /* =====================
@@ -181,9 +186,9 @@ export function calculateEntryScores({
    4️⃣ CVD strength (max 25)
   ===================== */
   // Адаптируем под твой новый MIN_CVD_THRESHOLD: 1500
-  // Теперь CVD 5000-7000 будет давать почти полный балл, а 1500 — начальный толчок
-  const cvd15Norm = Math.min(Math.abs(cvd15m) / 7000, 1);
-  const cvd3Norm = Math.min(Math.abs(cvd3m) / 3000, 1);
+  // Снизил пороги нормализации (было 7000/3000), чтобы легче набирать баллы
+  const cvd15Norm = Math.min(Math.abs(cvd15m) / 5000, 1);
+  const cvd3Norm = Math.min(Math.abs(cvd3m) / 2000, 1);
 
   if (cvd15m > 0) longScore += cvd15Norm * 15;
   if (cvd15m < 0) shortScore += cvd15Norm * 15;
@@ -213,10 +218,10 @@ export function calculateEntryScores({
   /* =====================
    6️⃣ RSI (max 10)
   ===================== */
-  // Сделал зоны чуть более строгими (60/40 вместо 55/45)
-  if (rsi >= 60) longScore += 10;
-  if (rsi <= 40) shortScore += 10;
-  details.rsi = rsi >= 60 || rsi <= 40 ? 10 : 0;
+  // Вернул зоны 55/45 (было 60/40), чтобы чаще ловить движения
+  if (rsi >= 55) longScore += 10;
+  if (rsi <= 45) shortScore += 10;
+  details.rsi = rsi >= 55 || rsi <= 45 ? 10 : 0;
 
   /* =====================
    7️⃣ Soft trend bonus (max 5)
@@ -275,7 +280,7 @@ export function getSignalAgreement({
     if (
       longScore >= 60 &&
       longScore - shortScore >= 10 &&
-      rsi >= 58 &&
+      rsi >= 55 &&
       cvd15m > 0 &&
       fundingRate <= 0.0002
     ) {
@@ -287,7 +292,7 @@ export function getSignalAgreement({
     if (
       shortScore >= 60 &&
       shortScore - longScore >= 10 &&
-      rsi <= 42 &&
+      rsi <= 45 &&
       cvd15m < 0 &&
       fundingRate >= -0.0002
     ) {

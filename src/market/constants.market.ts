@@ -92,10 +92,10 @@ export const BASE_IMPULSE_THRESHOLDS = {
 
   PRICE_STABLE_PCT: 0.35, // раньше 0.25
   PRICE_DROP_PCT: 0.8, // раньше 0.5
-  PRICE_SURGE_PCT: 1.0, // раньше 0.6
+  PRICE_SURGE_PCT: 0.6, // restored to 0.6
 
-  OI_INCREASE_PCT: 1.0, // раньше 0.6
-  OI_SURGE_PCT: 2.0, // раньше 1.2
+  OI_INCREASE_PCT: 0.6, // restored to 0.6
+  OI_SURGE_PCT: 1.2, // restored to 1.2
 } as const;
 
 export const LIQUID_IMPULSE_THRESHOLDS = {
