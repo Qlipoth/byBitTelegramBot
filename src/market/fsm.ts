@@ -152,6 +152,17 @@ export const EXIT_THRESHOLDS = {
   MAX_HOLD_TIME: 30 * 60 * 1000,
 };
 
+export type ExitReason =
+  | 'BLOWOFF'
+  | 'STOP_LOSS'
+  | 'TAKE_PROFIT_SIGNAL_WEAK'
+  | 'STRUCTURE_REVERSAL'
+  | 'FUNDING'
+  | 'CVD_REVERSAL'
+  | 'TIMEOUT'
+  | 'MAX_POSITION_DURATION'
+  | 'NONE';
+
 export function shouldExitPosition({
   fsm,
   signal,
@@ -174,8 +185,8 @@ export function shouldExitPosition({
   entryPrice: number;
   longScore: number;
   shortScore: number;
-}): boolean {
-  if (fsm.state !== 'OPEN' || !fsm.side) return false;
+}): { exit: boolean; reason: ExitReason } {
+  if (fsm.state !== 'OPEN' || !fsm.side) return { exit: false, reason: 'NONE' };
 
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
   console.log(`[FSM] Проверка условий выхода. Текущий PnL: ${pnlPct.toFixed(2)}%`);
@@ -184,7 +195,7 @@ export function shouldExitPosition({
   // Если мы в профите и началась фаза Blow-off — это идеальный момент зафиксироваться на сквизе
   if (phase === 'blowoff' && pnlPct > 0) {
     console.log(`[FSM] Выход по Blow-off. Фаза: ${phase}, PnL: ${pnlPct.toFixed(2)}%`);
-    return true;
+    return { exit: true, reason: 'BLOWOFF' };
   }
 
   // 2️⃣ ЖЁСТКИЙ СТОП-ЛОСС
@@ -192,7 +203,7 @@ export function shouldExitPosition({
     console.log(
       `[FSM] Сработал стоп-лосс. Текущий убыток: ${pnlPct.toFixed(2)}% (порог: -${EXIT_THRESHOLDS.STOP_LOSS_PCT}%)`
     );
-    return true;
+    return { exit: true, reason: 'STOP_LOSS' };
   }
 
   // 3️⃣ ТЕЙК-ПРОФИТ (С логикой затухания)
@@ -204,7 +215,7 @@ export function shouldExitPosition({
         `[FSM] Выход по тейк-профиту. PnL: ${pnlPct.toFixed(2)}%, ` +
           `Текущий счёт: ${currentScore}, Сигнал: ${signal}`
       );
-      return true;
+      return { exit: true, reason: 'TAKE_PROFIT_SIGNAL_WEAK' };
     }
   }
 
@@ -212,11 +223,11 @@ export function shouldExitPosition({
   // Если баллы противоположной стороны стали выше 70 — это опасный разворот
   if (fsm.side === 'LONG' && shortScore > 70) {
     console.log(`[FSM] Выход по смене структуры. SHORT счёт вырос до ${shortScore}`);
-    return true;
+    return { exit: true, reason: 'STRUCTURE_REVERSAL' };
   }
   if (fsm.side === 'SHORT' && longScore > 70) {
     console.log(`[FSM] Выход по смене структуры. LONG счёт вырос до ${longScore}`);
-    return true;
+    return { exit: true, reason: 'STRUCTURE_REVERSAL' };
   }
 
   // 5️⃣ ВЫХОД ПО ФАНДИНГУ (Защита от перегрева)
@@ -225,14 +236,14 @@ export function shouldExitPosition({
       `[FSM] Выход по невыгодному фандингу. Текущий: ${fundingRate}, ` +
         `Порог: ${EXIT_THRESHOLDS.FUNDING_LONG}`
     );
-    return true;
+    return { exit: true, reason: 'FUNDING' };
   }
   if (fsm.side === 'SHORT' && fundingRate < EXIT_THRESHOLDS.FUNDING_SHORT) {
     console.log(
       `[FSM] Выход по невыгодному фандингу. Текущий: ${fundingRate}, ` +
         `Порог: ${EXIT_THRESHOLDS.FUNDING_SHORT}`
     );
-    return true;
+    return { exit: true, reason: 'FUNDING' };
   }
 
   // 6️⃣ АГРЕССИВНЫЙ CVD ПРОТИВ НАС (Локальный разворот)
@@ -242,14 +253,14 @@ export function shouldExitPosition({
       `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
         `Порог: -${EXIT_THRESHOLDS.CVD_REVERSAL}`
     );
-    return true;
+    return { exit: true, reason: 'CVD_REVERSAL' };
   }
   if (fsm.side === 'SHORT' && cvd3m > EXIT_THRESHOLDS.CVD_REVERSAL) {
     console.log(
       `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
         `Порог: ${EXIT_THRESHOLDS.CVD_REVERSAL}`
     );
-    return true;
+    return { exit: true, reason: 'CVD_REVERSAL' };
   }
 
   // 7️⃣ ТАЙМАУТ (Защита от "залипания" в сделке)
@@ -261,8 +272,8 @@ export function shouldExitPosition({
       `[FSM] Выход по таймауту. В позиции: ${Math.round(timeInPosition / 1000)}с, ` +
         `Макс. время (${phase}): ${Math.round(maxTime / 1000)}с`
     );
-    return true;
+    return { exit: true, reason: 'TIMEOUT' };
   }
 
-  return false;
+  return { exit: false, reason: 'NONE' };
 }

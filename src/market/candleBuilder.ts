@@ -156,8 +156,8 @@ const CONFIG = {
 
 const MARKET_CLASS_COEFFICIENTS = {
   LIQUID: {
-    move: 1.0,
-    cvd: 1.0,
+    move: 0.75,
+    cvd: 0.4,
   },
   MEDIUM: {
     move: 0.85,

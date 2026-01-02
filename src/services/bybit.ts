@@ -1,6 +1,6 @@
 import { RestClientV5, WebsocketClient } from 'bybit-api';
 import type { MarketSnapshot } from '../market/types.js';
-import { PRIORITY_COINS } from '../market/constants.market.js';
+import { PRIORITY_COINS, SYMBOL_BLACKLIST } from '../market/constants.market.js';
 import { initCVDTracker } from '../market/cvdTracker.js';
 
 import * as dotenv from 'dotenv';
@@ -117,6 +117,7 @@ export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]>
     // Filter and sort all USDT pairs by turnover (quote volume) to avoid bias toward low-priced coins
     const allUsdtPairs = response.result.list
       .filter(ticker => ticker.symbol.endsWith('USDT'))
+      .filter(ticker => !SYMBOL_BLACKLIST.includes(ticker.symbol as (typeof SYMBOL_BLACKLIST)[number]))
       .sort((a, b) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h));
 
     // Get priority symbols that exist in the response
@@ -130,14 +131,19 @@ export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]>
       .slice(0, limit - priorityPairs.length);
 
     // Combine and extract symbols
-    const result = [...priorityPairs, ...topByVolume].slice(0, limit).map(ticker => ticker!.symbol);
+    const result = [...priorityPairs, ...topByVolume]
+      .slice(0, limit)
+      .map(ticker => ticker!.symbol)
+      .filter(s => !SYMBOL_BLACKLIST.includes(s as (typeof SYMBOL_BLACKLIST)[number]));
 
     console.log('🔍 Tracking symbols:', result.join(', '));
     return result;
   } catch (error) {
     console.error('Error fetching top liquid symbols:', error);
     // Fallback to default symbols if API fails
-    return PRIORITY_COINS.slice(0, limit);
+    return PRIORITY_COINS.slice(0, limit).filter(
+      s => !SYMBOL_BLACKLIST.includes(s as (typeof SYMBOL_BLACKLIST)[number])
+    );
   }
 }
 

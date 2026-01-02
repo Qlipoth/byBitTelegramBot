@@ -273,11 +273,11 @@ export function getSignalAgreement({
   if (phase === 'trend') {
     // LONG continuation
     if (
-      longScore >= 55 &&
-      longScore - shortScore >= 8 &&
-      rsi >= 55 &&
+      longScore >= 60 &&
+      longScore - shortScore >= 10 &&
+      rsi >= 58 &&
       cvd15m > 0 &&
-      fundingRate <= 0.0003
+      fundingRate <= 0.0002
     ) {
       console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION LONG`);
       return 'LONG';
@@ -285,11 +285,11 @@ export function getSignalAgreement({
 
     // SHORT continuation
     if (
-      shortScore >= 55 &&
-      shortScore - longScore >= 8 &&
-      rsi <= 45 &&
+      shortScore >= 60 &&
+      shortScore - longScore >= 10 &&
+      rsi <= 42 &&
       cvd15m < 0 &&
-      fundingRate >= -0.0003
+      fundingRate >= -0.0002
     ) {
       console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION SHORT`);
       return 'SHORT';
@@ -308,8 +308,8 @@ export function getSignalAgreement({
     }
 
     if (
-      longScore >= MIN_SCORE &&
-      longScore - shortScore >= 10 &&
+      longScore >= MIN_SCORE + 3 &&
+      longScore - shortScore >= 12 &&
       cvd15m > cvdThreshold &&
       fundingRate <= 0.0001
     ) {
@@ -318,8 +318,8 @@ export function getSignalAgreement({
     }
 
     if (
-      shortScore >= MIN_SCORE &&
-      shortScore - longScore >= 10 &&
+      shortScore >= MIN_SCORE + 3 &&
+      shortScore - longScore >= 12 &&
       cvd15m < -cvdThreshold &&
       fundingRate >= -0.0001
     ) {
@@ -332,12 +332,22 @@ export function getSignalAgreement({
   // 4️⃣ RANGE
   // =====================
   if (phase === 'range') {
-    if (longScore >= MIN_SCORE && longScore - shortScore >= 15) {
+    if (
+      longScore >= MIN_SCORE + 5 &&
+      longScore - shortScore >= 20 &&
+      rsi >= 55 &&
+      cvd15m > 0
+    ) {
       console.log(`[SIGNAL_AGREEMENT] RANGE LONG`);
       return 'LONG';
     }
 
-    if (shortScore >= MIN_SCORE && shortScore - longScore >= 15) {
+    if (
+      shortScore >= MIN_SCORE + 5 &&
+      shortScore - longScore >= 20 &&
+      rsi <= 45 &&
+      cvd15m < 0
+    ) {
       console.log(`[SIGNAL_AGREEMENT] RANGE SHORT`);
       return 'SHORT';
     }
@@ -364,6 +374,7 @@ export function confirmEntry({
   }
 
   const pChange = delta.priceChangePct;
+  const minMove = impulse.PRICE_SURGE_PCT * 0.4;
 
   // Если мы в ТРЕНДЕ — подтверждаем через импульс (как и было)
   if (phase === 'trend') {
@@ -387,14 +398,14 @@ export function confirmEntry({
   // так как мы ловим самое начало движения или отскок.
   if (phase === 'accumulation' || phase === 'distribution' || phase === 'range') {
     if (signal === 'LONG') {
-      const confirmed = pChange > 0 && cvd3m > 0;
+      const confirmed = pChange > minMove && cvd3m > 0;
       console.log(
         `[CONFIRM_ENTRY] ${phase.toUpperCase()} LONG check: pChange=${pChange} > 0 && cvd3m=${cvd3m} > 0 => ${confirmed}`
       );
       return confirmed;
     }
     if (signal === 'SHORT') {
-      const confirmed = pChange < 0 && cvd3m < 0;
+      const confirmed = pChange < -minMove && cvd3m < 0;
       console.log(
         `[CONFIRM_ENTRY] ${phase.toUpperCase()} SHORT check: pChange=${pChange} < 0 && cvd3m=${cvd3m} < 0 => ${confirmed}`
       );

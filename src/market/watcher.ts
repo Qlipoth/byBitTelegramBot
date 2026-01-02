@@ -262,7 +262,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
 
       console.log('3) currentPos:', JSON.stringify(currentPos));
 
-      const exitSignal =
+      const exitCheck =
         fsm.state === 'OPEN' && currentPos
           ? shouldExitPosition({
               fsm,
@@ -276,7 +276,10 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
               shortScore,
               phase: state.phase,
             })
-          : false;
+          : { exit: false, reason: 'NONE' as const };
+
+      const exitSignal = exitCheck.exit;
+      const exitReason = exitCheck.reason;
 
       const { action } = fsmStep(fsm, {
         signal,
@@ -343,6 +346,19 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       if (action === 'EXIT_MARKET' && hasOpen) {
         const pos = realTradeManager.getPosition(symbol);
 
+        const effectiveExitReason = exitSignal ? exitReason : 'MAX_POSITION_DURATION';
+
+        logData.exit = {
+          reason: effectiveExitReason,
+          pnlPct:
+            pos && Number.isFinite(pos.entryPrice)
+              ? ((snap.price - pos.entryPrice) / pos.entryPrice) * (pos.side === 'LONG' ? 100 : -100)
+              : null,
+          currentPrice: snap.price,
+          entryPrice: pos?.entryPrice ?? null,
+          side: pos?.side ?? null,
+        };
+
         // ВАЖНО: Добавляем await
         await realTradeManager.closePosition(symbol);
 
@@ -356,6 +372,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         onAlert(
           `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +
             `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
+            `Причина: *${effectiveExitReason}*\n` +
             `Цена: ${snap.price}\n`
         );
       }

@@ -103,8 +103,8 @@ export const LIQUID_IMPULSE_THRESHOLDS = {
   VOLUME_HIGH_PCT: 10,
 
   PRICE_STABLE_PCT: 0.18,
-  PRICE_DROP_PCT: 0.4,
-  PRICE_SURGE_PCT: 0.3,
+  PRICE_DROP_PCT: 0.28,
+  PRICE_SURGE_PCT: 0.2,
 
   OI_INCREASE_PCT: 0.3,
   OI_SURGE_PCT: 0.5,
@@ -201,7 +201,9 @@ export const FUNDING_RATE_THRESHOLDS = {
   EXTREME: 0.03, // 0.03% per 8h
 } as const;
 
-export const COINS_COUNT = 20;
+export const SYMBOL_BLACKLIST = ['FLOWUSDT', 'SQDUSDT', 'RIVERUSDT'] as const;
+
+export const COINS_COUNT = 30;
 
 export const STRUCTURE_WINDOW = 15;
 
