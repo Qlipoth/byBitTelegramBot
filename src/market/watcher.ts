@@ -186,7 +186,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // =====================
       // Entry Score Calculation
       // =====================
-      const { entrySignal, longScore, shortScore } = calculateEntryScores({
+      const { entrySignal, longScore, shortScore, details } = calculateEntryScores({
         state,
         delta,
         delta15m,
@@ -202,7 +202,8 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       });
 
       logData.scores = { longScore, shortScore };
-      console.log(`${symbol}: `, '0) entrySignal:', entrySignal);
+      logData.details = details;
+      console.log(`${symbol}: `, '0) entrySignal:', entrySignal, JSON.stringify(details));
 
       // =====================
       // Signal Agreement Check
@@ -352,7 +353,8 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
           reason: effectiveExitReason,
           pnlPct:
             pos && Number.isFinite(pos.entryPrice)
-              ? ((snap.price - pos.entryPrice) / pos.entryPrice) * (pos.side === 'LONG' ? 100 : -100)
+              ? ((snap.price - pos.entryPrice) / pos.entryPrice) *
+                (pos.side === 'LONG' ? 100 : -100)
               : null,
           currentPrice: snap.price,
           entryPrice: pos?.entryPrice ?? null,

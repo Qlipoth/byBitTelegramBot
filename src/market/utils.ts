@@ -250,8 +250,7 @@ export function calculateEntryScores({
     longScore,
     shortScore,
     entrySignal,
-    // Рекомендую добавить это в возвращаемый объект для логов
-    // debug: details
+    details, // Returning debug details
   };
 }
 

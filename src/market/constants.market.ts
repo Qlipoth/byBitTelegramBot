@@ -139,15 +139,15 @@ export const LIQUID_STRUCTURE_THRESHOLDS = {
 
 // Trend thresholds for normal coins
 export const BASE_TREND_THRESHOLDS = {
-  PRICE_CHANGE: 2, // 2% price change for significant move
-  OI_CHANGE: 5, // 5% OI change for trend confirmation
+  PRICE_CHANGE: 1.2, // 2% -> 1.2% (More realistic for alts)
+  OI_CHANGE: 2.0, // 5% -> 2.0% (Easier to confirm trend)
   ACCUMULATION_PRICE_BAND: 1, // 1% price band for accumulation
 } as const;
 
 // More sensitive trend thresholds for liquid coins
 export const LIQUID_TREND_THRESHOLDS = {
-  PRICE_CHANGE: 1.3, // More sensitive to price changes
-  OI_CHANGE: 2, // More sensitive to OI changes
+  PRICE_CHANGE: 0.5, // Aligned with MARKET_SETTINGS.LIQUID.moveThreshold
+  OI_CHANGE: 0.3, // Aligned with MARKET_SETTINGS.LIQUID.oiThreshold
   ACCUMULATION_PRICE_BAND: 0.4, // Tighter accumulation band
 } as const;
 

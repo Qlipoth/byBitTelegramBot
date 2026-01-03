@@ -54,6 +54,15 @@ export interface EntryScores {
   longScore: number;
   shortScore: number;
   entrySignal: string;
+  details?: Partial<{
+    phase: number;
+    oi: number;
+    funding: number;
+    cvd: number;
+    impulse: number;
+    rsi: number;
+    trend: number;
+  }>;
 }
 
 export interface EntryScoresParams {
