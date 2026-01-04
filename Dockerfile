@@ -5,7 +5,6 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml* ./
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm test
 RUN pnpm build
 
 # Финальный образ

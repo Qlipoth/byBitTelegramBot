@@ -10,16 +10,10 @@
     "test": "vitest run",
     "preview": "node dist/bot.js",
     "start": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
-    "build": "node build.js",
+    "build": "pnpm test && node build.js",
     "build:prod": "NODE_ENV=production node build.js"
   },
-  "keywords": [
-    "bybit",
-    "trading",
-    "bot",
-    "telegram",
-    "crypto"
-  ],
+  "keywords": ["bybit", "trading", "bot", "telegram", "crypto"],
   "author": "Qlipoth",
   "license": "ISC",
   "dependencies": {
