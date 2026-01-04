@@ -2,27 +2,35 @@
 import fs from 'fs';
 import path from 'path';
 
-const LOG_DIR = process.env.TMPDIR || '/tmp';
-const LOG_PATH = path.join(LOG_DIR, 'bot.log');
+export class FileLogger {
+  private readonly logDir: string;
+  private readonly logPath: string;
 
-function ensureLogDir() {
-  if (!fs.existsSync(LOG_DIR)) {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
+  constructor(logDir: string = process.env.TMPDIR || '/tmp', fileName: string = 'bot.log') {
+    this.logDir = logDir;
+    this.logPath = path.join(this.logDir, fileName);
+    this.ensureLogDir();
+  }
+
+  private ensureLogDir() {
+    if (!fs.existsSync(this.logDir)) {
+      fs.mkdirSync(this.logDir, { recursive: true });
+    }
+  }
+
+  public log(data: Record<string, unknown>) {
+    try {
+      const line = JSON.stringify(data) + '\n';
+      fs.appendFile(this.logPath, line, err => {
+        if (err) {
+          console.error('[LOGGER ERROR]', err);
+        }
+      });
+    } catch (e) {
+      console.error('[LOGGER FATAL]', e);
+    }
   }
 }
 
-export function logEvent(data: Record<string, any>) {
-  try {
-    ensureLogDir();
-
-    const line = JSON.stringify(data) + '\n';
-
-    fs.appendFile(LOG_PATH, line, err => {
-      if (err) {
-        console.error('[LOGGER ERROR]', err);
-      }
-    });
-  } catch (e) {
-    console.error('[LOGGER FATAL]', e);
-  }
-}
+const defaultLogger = new FileLogger();
+export const logEvent = (data: Record<string, unknown>) => defaultLogger.log(data);
