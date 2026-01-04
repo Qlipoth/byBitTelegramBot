@@ -285,7 +285,7 @@ bot.command('stats', async ctx => {
 
     const winrate = stats.trades > 0 ? (stats.wins / stats.trades) * 100 : 0;
 
-    const topSymbols = stats.bySymbol.slice(0, 15);
+    const topSymbols = stats.bySymbol;
     const symbolsLines = topSymbols.length
       ? topSymbols
           .map(s => {
@@ -309,7 +309,7 @@ bot.command('stats', async ctx => {
       `Заработано: *+${earned.toFixed(2)}$*\n` +
       `Проёбано: *-${lost.toFixed(2)}$*\n` +
       `Итого (Net): *${pnlNetSign}${pnlNet.toFixed(2)}$*\n\n` +
-      `Монеты (top ${topSymbols.length} по |PnL|):\n${symbolsLines}`;
+      `Монеты (все торгуемые ${topSymbols.length} по |PnL|):\n${symbolsLines}`;
 
     await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, msg, {
       parse_mode: 'Markdown',
