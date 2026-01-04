@@ -201,7 +201,7 @@ export const FUNDING_RATE_THRESHOLDS = {
   EXTREME: 0.03, // 0.03% per 8h
 } as const;
 
-export const SYMBOL_BLACKLIST = ['FLOWUSDT', 'SQDUSDT', 'RIVERUSDT'] as const;
+export const SYMBOL_BLACKLIST = ['FLOWUSDT', 'SQDUSDT', 'FARTCOINUSDT'] as const;
 
 export const COINS_COUNT = 10;
 

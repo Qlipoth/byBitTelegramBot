@@ -22,6 +22,7 @@ import {
   confirmEntry,
   detectMarketPhase,
   selectCoinThresholds,
+  ensureLiquidThresholdsCalibrated,
 } from './utils.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState, SymbolValue } from './types.js';
@@ -42,6 +43,7 @@ const tradeFSMBySymbol = new Map<string, ReturnType<typeof createFSM>>();
 // Initialize watchers
 // =====================
 export async function initializeMarketWatcher(onAlert: (msg: string) => void) {
+  await ensureLiquidThresholdsCalibrated();
   const symbols = await getTopLiquidSymbols(COINS_COUNT);
   console.log(`🔄 Tracking ${symbols.length} symbols`);
 

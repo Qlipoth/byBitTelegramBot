@@ -144,9 +144,9 @@ export function fsmStep(
 }
 
 export const EXIT_THRESHOLDS = {
-  STOP_LOSS_PCT: 0.6, // 0.6% стоп
-  TAKE_PROFIT_PCT: 1.2, // минимум 1.2% для разрешения выхода
-  CVD_REVERSAL: 15000, // агрессивный CVD против позиции
+  STOP_LOSS_PCT: 1.2, // 0.6% стоп
+  TAKE_PROFIT_PCT: 2, // минимум 1.2% для разрешения выхода
+  CVD_REVERSAL: 500000, // агрессивный CVD против позиции
   FUNDING_LONG: 0.0006,
   FUNDING_SHORT: -0.0006,
   MAX_HOLD_TIME: 30 * 60 * 1000,

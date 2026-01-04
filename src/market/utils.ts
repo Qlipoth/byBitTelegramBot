@@ -1,3 +1,7 @@
+import dayjs from 'dayjs';
+import type { KlineIntervalV3 } from 'bybit-api';
+
+import { bybitClient } from '../services/bybit.js';
 import { getTrendThresholds, MIN_SCORE, SYMBOLS, TREND_THRESHOLDS } from './constants.market.js';
 import type {
   ConfirmEntryParams,
@@ -538,4 +542,216 @@ export function roundStep(value: number, step: number): number {
   if (!step) return value;
   const precision = step.toString().split('.')[1]?.length || 0;
   return parseFloat((Math.floor(value / step) * step).toFixed(precision));
+}
+
+const LIQUID_CALIBRATION_SYMBOLS: string[] = [SYMBOLS.BTC, SYMBOLS.ETH, SYMBOLS.SOL];
+const LIQUID_CALIBRATION_SETTINGS = {
+  days: 60,
+  intervalMinutes: 30,
+  percentile: 0.8,
+};
+
+let liquidThresholdsCalibrated = false;
+let liquidCalibrationPromise: Promise<void> | null = null;
+
+export async function ensureLiquidThresholdsCalibrated() {
+  if (liquidThresholdsCalibrated) return;
+  if (!liquidCalibrationPromise) {
+    liquidCalibrationPromise = calibrateLiquidThresholds()
+      .catch(error => {
+        console.error('[CALIBRATION] Failed to calibrate liquid thresholds:', error);
+      })
+      .finally(() => {
+        liquidThresholdsCalibrated = true;
+      });
+  }
+  await liquidCalibrationPromise;
+}
+
+type KlineRow = {
+  timestamp: number;
+  close: number;
+  turnover: number;
+};
+
+type OpenInterestRow = {
+  timestamp: number;
+  openInterest: number;
+};
+
+type CalibrationSample = {
+  priceChangePct: number;
+  oiChangePct: number;
+  cvdProxy: number;
+};
+
+async function calibrateLiquidThresholds() {
+  const summaries: CalibrationSample[] = [];
+  const endTime = Date.now();
+  const startTime = dayjs(endTime).subtract(LIQUID_CALIBRATION_SETTINGS.days, 'day').valueOf();
+
+  for (const symbol of LIQUID_CALIBRATION_SYMBOLS) {
+    try {
+      const [klines, oiPoints] = await Promise.all([
+        fetchKlines(symbol, startTime, endTime),
+        fetchOpenInterest(symbol, startTime, endTime),
+      ]);
+
+      if (!klines.length || !oiPoints.length) {
+        console.warn(`[CALIBRATION] Not enough history for ${symbol}`);
+        continue;
+      }
+
+      const samples = buildCalibrationSamples(klines, oiPoints);
+      if (!samples.length) {
+        console.warn(`[CALIBRATION] No samples derived for ${symbol}`);
+        continue;
+      }
+
+      summaries.push(...samples);
+      console.log(`[CALIBRATION] ${symbol}: collected ${samples.length} samples`);
+    } catch (error) {
+      console.error(`[CALIBRATION] Failed to fetch data for ${symbol}:`, error);
+    }
+  }
+
+  if (!summaries.length) {
+    console.warn('[CALIBRATION] No calibration data gathered; keeping default thresholds');
+    return;
+  }
+
+  const moveThreshold = percentile(
+    summaries.map(s => Math.abs(s.priceChangePct)),
+    LIQUID_CALIBRATION_SETTINGS.percentile
+  );
+  const oiThreshold = percentile(
+    summaries.map(s => Math.abs(s.oiChangePct)),
+    LIQUID_CALIBRATION_SETTINGS.percentile
+  );
+  const cvdThreshold = percentile(
+    summaries.map(s => Math.abs(s.cvdProxy)),
+    LIQUID_CALIBRATION_SETTINGS.percentile
+  );
+
+  if (!Number.isFinite(moveThreshold) || !Number.isFinite(oiThreshold) || !Number.isFinite(cvdThreshold)) {
+    console.warn('[CALIBRATION] Computed thresholds invalid; keeping defaults');
+    return;
+  }
+
+  MARKET_SETTINGS.LIQUID.moveThreshold = Number(moveThreshold.toFixed(3));
+  MARKET_SETTINGS.LIQUID.oiThreshold = Number(oiThreshold.toFixed(3));
+  MARKET_SETTINGS.LIQUID.cvdThreshold = Math.round(cvdThreshold);
+
+  console.log(
+    `[CALIBRATION] Liquid thresholds updated: move=${MARKET_SETTINGS.LIQUID.moveThreshold}%, oi=${MARKET_SETTINGS.LIQUID.oiThreshold}%, cvd=${MARKET_SETTINGS.LIQUID.cvdThreshold}`
+  );
+}
+
+async function fetchKlines(symbol: string, start: number, end: number): Promise<KlineRow[]> {
+  const interval = LIQUID_CALIBRATION_SETTINGS.intervalMinutes.toString() as KlineIntervalV3;
+  let cursor: string | undefined;
+  const rows: KlineRow[] = [];
+
+  do {
+    const response = (await bybitClient.getKline({
+      category: 'linear',
+      symbol,
+      interval,
+      start,
+      end,
+      limit: 200,
+      cursor,
+    } as any)) as any;
+
+    if (response.retCode !== 0) {
+      throw new Error(response.retMsg || 'Unknown error');
+    }
+
+    const list = response.result.list ?? [];
+    for (const item of list) {
+      const [ts, , , , close, , turnover] = item;
+      rows.push({
+        timestamp: Number(ts),
+        close: Number(close),
+        turnover: Number(turnover ?? 0),
+      });
+    }
+
+    cursor = response.result.nextPageCursor ?? undefined;
+  } while (cursor && rows.length < 2000);
+
+  return rows.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+async function fetchOpenInterest(symbol: string, startTime: number, endTime: number) {
+  const intervalTime = `${LIQUID_CALIBRATION_SETTINGS.intervalMinutes}min`;
+  let cursor: string | undefined;
+  const rows: OpenInterestRow[] = [];
+
+  do {
+    const response = (await bybitClient.getOpenInterest({
+      category: 'linear',
+      symbol,
+      intervalTime,
+      startTime,
+      endTime,
+      limit: 200,
+      cursor,
+    } as any)) as any;
+
+    if (response.retCode !== 0) {
+      throw new Error(response.retMsg || 'Unknown error');
+    }
+
+    const list = response.result.list ?? [];
+    for (const item of list) {
+      rows.push({
+        timestamp: Number(item.timestamp),
+        openInterest: Number(item.openInterest),
+      });
+    }
+
+    cursor = response.result.nextPageCursor ?? undefined;
+  } while (cursor && rows.length < 2000);
+
+  return rows.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function buildCalibrationSamples(klines: KlineRow[], oiPoints: OpenInterestRow[]): CalibrationSample[] {
+  const samples: CalibrationSample[] = [];
+  for (let i = 1; i < klines.length; i++) {
+    const prev = klines[i - 1]!;
+    const curr = klines[i]!;
+    if (!prev.close || !curr.close) continue;
+
+    const priceChangePct = ((curr.close - prev.close) / prev.close) * 100;
+    const prevOi = findNearestOi(oiPoints, prev.timestamp);
+    const currOi = findNearestOi(oiPoints, curr.timestamp);
+    const oiChangePct = prevOi ? ((currOi - prevOi) / prevOi) * 100 : 0;
+    const turnover = curr.turnover || 0;
+    const normalizedCvd = turnover && curr.close ? turnover / Math.max(curr.close, 1) : 0;
+    const cvdProxy = normalizedCvd * Math.sign(priceChangePct || 1);
+
+    samples.push({ priceChangePct, oiChangePct, cvdProxy });
+  }
+  return samples;
+}
+
+function findNearestOi(points: OpenInterestRow[], timestamp: number): number {
+  let latest = points[0]?.openInterest ?? 0;
+  for (const point of points) {
+    if (point.timestamp <= timestamp) {
+      latest = point.openInterest;
+    } else {
+      break;
+    }
+  }
+  return latest;
+}
+
+function percentile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round(p * (sorted.length - 1))));
+  return sorted[index]!;
 }
