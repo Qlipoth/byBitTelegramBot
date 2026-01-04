@@ -61,7 +61,8 @@ export function calculateRSI(prices: number[], period: number = 14): number {
   let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
 
   // Calculate RS and RSI
-  for (let i = period; i < prices.length; i++) {
+  // IMPORTANT: iterate over deltas/gains length to avoid out-of-bounds reads (NaN RSI)
+  for (let i = period; i < gains.length; i++) {
     avgGain = (avgGain * (period - 1) + gains[i]!) / period;
     avgLoss = (avgLoss * (period - 1) + losses[i]!) / period;
   }
@@ -72,7 +73,8 @@ export function calculateRSI(prices: number[], period: number = 14): number {
   }
 
   const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
+  const rsi = 100 - 100 / (1 + rs);
+  return Number.isFinite(rsi) ? rsi : 50;
 }
 
 export function calculatePriceChanges(prices: number[]): number[] {
@@ -277,11 +279,13 @@ export function getSignalAgreement({
   if (phase === 'trend') {
     // LONG continuation
     if (
-      longScore >= 60 &&
-      longScore - shortScore >= 10 &&
-      rsi >= 55 &&
+      longScore >= 55 &&
+      longScore - shortScore >= 7 &&
+      rsi >= 50 &&
+      pricePercentChange > 0 &&
+      Math.abs(pricePercentChange) >= moveThreshold * 0.5 &&
       cvd15m > 0 &&
-      fundingRate <= 0.0002
+      fundingRate <= 0.00025
     ) {
       console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION LONG`);
       return 'LONG';
@@ -289,11 +293,13 @@ export function getSignalAgreement({
 
     // SHORT continuation
     if (
-      shortScore >= 60 &&
-      shortScore - longScore >= 10 &&
-      rsi <= 45 &&
+      shortScore >= 55 &&
+      shortScore - longScore >= 7 &&
+      rsi <= 50 &&
+      pricePercentChange < 0 &&
+      Math.abs(pricePercentChange) >= moveThreshold * 0.5 &&
       cvd15m < 0 &&
-      fundingRate >= -0.0002
+      fundingRate >= -0.00025
     ) {
       console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION SHORT`);
       return 'SHORT';
@@ -304,7 +310,7 @@ export function getSignalAgreement({
   // 3️⃣ BREAKOUT / EXPANSION ENTRY
   // =====================
   if (phase === 'trend' || phase === 'accumulation' || phase === 'distribution') {
-    if (Math.abs(pricePercentChange) < moveThreshold) {
+    if (Math.abs(pricePercentChange) < moveThreshold * 0.8) {
       console.log(
         `[SIGNAL_AGREEMENT] Price change ${pricePercentChange}% < moveThreshold ${moveThreshold}%, returning NONE`
       );
@@ -313,9 +319,9 @@ export function getSignalAgreement({
 
     if (
       longScore >= MIN_SCORE + 3 &&
-      longScore - shortScore >= 12 &&
+      longScore - shortScore >= 9 &&
       cvd15m > cvdThreshold &&
-      fundingRate <= 0.0001
+      fundingRate <= 0.0002
     ) {
       console.log(`[SIGNAL_AGREEMENT] BREAKOUT LONG`);
       return 'LONG';
@@ -323,9 +329,9 @@ export function getSignalAgreement({
 
     if (
       shortScore >= MIN_SCORE + 3 &&
-      shortScore - longScore >= 12 &&
+      shortScore - longScore >= 9 &&
       cvd15m < -cvdThreshold &&
-      fundingRate >= -0.0001
+      fundingRate >= -0.0002
     ) {
       console.log(`[SIGNAL_AGREEMENT] BREAKOUT SHORT`);
       return 'SHORT';
@@ -340,6 +346,8 @@ export function getSignalAgreement({
       longScore >= MIN_SCORE + 5 &&
       longScore - shortScore >= 20 &&
       rsi >= 55 &&
+      Math.abs(pricePercentChange) >= moveThreshold * 0.3 &&
+      Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m > 0
     ) {
       console.log(`[SIGNAL_AGREEMENT] RANGE LONG`);
@@ -350,6 +358,8 @@ export function getSignalAgreement({
       shortScore >= MIN_SCORE + 5 &&
       shortScore - longScore >= 20 &&
       rsi <= 45 &&
+      Math.abs(pricePercentChange) >= moveThreshold * 0.3 &&
+      Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m < 0
     ) {
       console.log(`[SIGNAL_AGREEMENT] RANGE SHORT`);
@@ -378,7 +388,7 @@ export function confirmEntry({
   }
 
   const pChange = delta.priceChangePct;
-  const minMove = impulse.PRICE_SURGE_PCT * 0.4;
+  const minMove = impulse.PRICE_SURGE_PCT * (phase === 'range' ? 0.35 : 0.3);
 
   // Если мы в ТРЕНДЕ — подтверждаем через импульс (как и было)
   if (phase === 'trend') {

@@ -189,6 +189,7 @@ export function shouldExitPosition({
   if (fsm.state !== 'OPEN' || !fsm.side) return { exit: false, reason: 'NONE' };
 
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
+  const timeInPosition = now - (fsm.openedAt || 0);
   console.log(`[FSM] Проверка условий выхода. Текущий PnL: ${pnlPct.toFixed(2)}%`);
 
   // 1️⃣ КРИТИЧЕСКИЙ ВЫХОД: Blow-off (Кульминация)
@@ -248,14 +249,14 @@ export function shouldExitPosition({
 
   // 6️⃣ АГРЕССИВНЫЙ CVD ПРОТИВ НАС (Локальный разворот)
   // Используем cvd3m для детекции внезапного давления маркет-ордеров
-  if (fsm.side === 'LONG' && cvd3m < -EXIT_THRESHOLDS.CVD_REVERSAL) {
+  if (timeInPosition > 60_000 && fsm.side === 'LONG' && cvd3m < -EXIT_THRESHOLDS.CVD_REVERSAL) {
     console.log(
       `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
         `Порог: -${EXIT_THRESHOLDS.CVD_REVERSAL}`
     );
     return { exit: true, reason: 'CVD_REVERSAL' };
   }
-  if (fsm.side === 'SHORT' && cvd3m > EXIT_THRESHOLDS.CVD_REVERSAL) {
+  if (timeInPosition > 60_000 && fsm.side === 'SHORT' && cvd3m > EXIT_THRESHOLDS.CVD_REVERSAL) {
     console.log(
       `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
         `Порог: ${EXIT_THRESHOLDS.CVD_REVERSAL}`
@@ -266,7 +267,6 @@ export function shouldExitPosition({
   // 7️⃣ ТАЙМАУТ (Защита от "залипания" в сделке)
   // Для флета (range) таймаут можно сделать короче, для тренда — дольше
   const maxTime = phase === 'range' ? CONFIG.MAX_RANGE_HOLD : CONFIG.MAX_TREND_HOLD;
-  const timeInPosition = now - (fsm.openedAt || 0);
   if (fsm.openedAt && timeInPosition > maxTime) {
     console.log(
       `[FSM] Выход по таймауту. В позиции: ${Math.round(timeInPosition / 1000)}с, ` +

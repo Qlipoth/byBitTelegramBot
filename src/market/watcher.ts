@@ -142,6 +142,8 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
 
       const priceHistory = snaps.map(s => s.price).slice(-30);
       const rsi = calculateRSI(priceHistory, 14);
+      logData.rsi = rsi;
+      logData.priceHistoryLen = priceHistory.length;
 
       const trendObj = {
         isBull: false,
@@ -229,9 +231,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         state: fsm.state,
         side: fsm.side,
       };
-
-      logEvent(logData);
-
       console.log('1) FSM:', JSON.stringify(fsm));
       let confirmed = false;
       // Step the FSM
@@ -240,7 +239,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       if (signal === 'LONG' || signal === 'SHORT') {
         confirmed = confirmEntry({
           signal,
-          delta,
+          delta: delta5m,
           cvd3m: cvd3m || 0,
           impulse,
           phase: state.phase,
@@ -248,7 +247,8 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         console.log('2) confirmed value:', confirmed);
       }
 
-      if (realTradeManager.hasPending(symbol)) {
+      const hadPending = realTradeManager.hasPending(symbol);
+      if (hadPending) {
         try {
           await realTradeManager.syncSymbol(symbol);
         } catch (e) {
@@ -289,6 +289,24 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         now,
       });
 
+      logData.confirmed = confirmed;
+      logData.action = action;
+      logData.position = {
+        hasOpen,
+        hasExposure,
+        hadPending,
+      };
+      logData.exitCheck = {
+        exitSignal,
+        exitReason,
+      };
+
+      if (action === 'ENTER_MARKET' && hasExposure) {
+        logData.entrySkipReason = 'HAS_EXPOSURE';
+      }
+
+      logEvent(logData);
+
       console.log('4) ACTION IS:', JSON.stringify(action));
       // =====================
       // Actions
@@ -299,6 +317,8 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       if (action === 'ENTER_MARKET' && !hasExposure) {
         if (!tradingState.isEnabled()) {
           console.log('[WATCHER] Trading disabled — skip ENTER_MARKET');
+          logData.entrySkipReason = 'TRADING_DISABLED';
+          logEvent(logData);
           return; // ← выход ТОЛЬКО из текущей итерации символа
         }
         // Сохраняем цену входа в контекст FSM (нужно для расчета PnL в shouldExitPosition)
@@ -308,6 +328,8 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
 
         if (!stopPrice) {
           console.log('Не сформирован стоплосс!');
+          logData.entrySkipReason = 'NO_STOPLOSS';
+          logEvent(logData);
           return;
         }
 
