@@ -203,7 +203,7 @@ export const FUNDING_RATE_THRESHOLDS = {
 
 export const SYMBOL_BLACKLIST = ['FLOWUSDT', 'SQDUSDT', 'RIVERUSDT'] as const;
 
-export const COINS_COUNT = 30;
+export const COINS_COUNT = 10;
 
 export const STRUCTURE_WINDOW = 15;
 
