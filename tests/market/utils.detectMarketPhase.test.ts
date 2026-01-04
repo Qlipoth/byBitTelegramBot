@@ -1,0 +1,159 @@
+import { describe, expect, it } from 'vitest';
+import { detectMarketPhase } from '../../src/market/utils.js';
+import type { MarketDelta } from '../../src/market/types.js';
+
+const baseSettings = {
+  moveThreshold: 1,
+  cvdThreshold: 2000,
+  oiThreshold: 0.5,
+};
+
+const baseDelta: MarketDelta = {
+  priceChangePct: 0,
+  oiChangePct: 0,
+  fundingChange: 0,
+  minutesAgo: 0,
+};
+
+const makeDelta = (overrides: Partial<MarketDelta> = {}): MarketDelta => ({
+  ...baseDelta,
+  ...overrides,
+});
+
+describe('detectMarketPhase', () => {
+  it('detects trend when price and OI exceed thresholds', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 1.2, oiChangePct: 0.6 }),
+      delta15m: makeDelta(),
+      cvd30m: 0,
+      settings: baseSettings,
+    });
+
+    expect(phase).toBe('trend');
+  });
+
+  it('detects accumulation when price flat, OI rising and cvd positive', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 0.3, oiChangePct: 0.7 }),
+      delta15m: makeDelta(),
+      cvd30m: 3000,
+      settings: baseSettings,
+    });
+
+    expect(phase).toBe('accumulation');
+  });
+
+  it('detects distribution when cvd negative with flat price and rising OI', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 0.3, oiChangePct: 0.7 }),
+      delta15m: makeDelta(),
+      cvd30m: -3000,
+      settings: baseSettings,
+    });
+
+    expect(phase).toBe('distribution');
+  });
+
+  it('detects blowoff when price spikes and OI collapses', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 0.95 }),
+      delta15m: makeDelta({ oiChangePct: -0.6 }),
+      cvd30m: 0,
+      settings: baseSettings,
+    });
+
+    expect(phase).toBe('blowoff');
+  });
+
+  it('defaults to range when no other condition matches', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 0.2, oiChangePct: 0.1 }),
+      delta15m: makeDelta({ oiChangePct: 0.1 }),
+      cvd30m: 0,
+      settings: baseSettings,
+    });
+
+    expect(phase).toBe('range');
+  });
+  // Проверка шортового тренда (чтобы логика не была заточена только на лонг)
+  it('detects trend for short direction (price down, OI up)', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: -1.5, oiChangePct: 0.8 }),
+      delta15m: makeDelta(),
+      cvd30m: -1000,
+      settings: baseSettings,
+    });
+    expect(phase).toBe('trend');
+  });
+
+  // 2️⃣ Тест на "Ложный пробой" (Цена летит, но ликвидности/денег нет)
+  it('stays in range if price moves but OI does not follow', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 2.0, oiChangePct: 0.1 }), // Резкий скачок цены
+      delta15m: makeDelta({ oiChangePct: 0.05 }), // Но OI почти мертв
+      cvd30m: 100,
+      settings: baseSettings,
+    });
+    // Мы не хотим заходить в тренд, если это пустой прострел без набора позиций
+    expect(phase).toBe('range');
+  });
+
+  // 3️⃣ Тест на Дивергенцию (Цена растет, а CVD сильно давит вниз)
+  it('detects range/noise when price and CVD diverge strongly', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 1.5, oiChangePct: 0.7 }),
+      delta15m: makeDelta(),
+      cvd30m: -5000, // Цена растет, но рыночные продажи (CVD) огромные
+      settings: baseSettings,
+    });
+    // Это классический признак "скрытых продаж", опасно считать это чистым трендом
+    expect(phase).toBe('range');
+  });
+
+  it('handles missing or zero delta gracefully', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 0, oiChangePct: 0 }),
+      delta15m: makeDelta(),
+      cvd30m: 0,
+      settings: baseSettings,
+    });
+    expect(phase).toBe('range');
+  });
+
+  // Тест на "Выжженную землю" (Нулевые или NaN данные)
+  it('returns range for invalid or zero data', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: NaN, oiChangePct: 0 }),
+      delta15m: makeDelta(),
+      cvd30m: 0,
+      settings: baseSettings,
+    });
+    expect(phase).toBe('range');
+  });
+
+  // Тест на очень старые данные (Stale Data)
+  it('returns range if data is too old', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({ priceChangePct: 2.0, minutesAgo: 60 }), // Импульс был час назад
+      delta15m: makeDelta(),
+      cvd30m: 5000,
+      settings: baseSettings,
+    });
+    // Если данные протухли, фаза не может считаться актуальной
+    expect(phase).toBe('range');
+  });
+  // Проверка граничных условий (Boundary Testing)
+  it('handles values exactly at the threshold', () => {
+    const phase = detectMarketPhase({
+      delta30m: makeDelta({
+        priceChangePct: baseSettings.moveThreshold,
+        oiChangePct: baseSettings.oiThreshold,
+      }), // Ровно 1.0 / 0.5
+      delta15m: makeDelta(),
+      cvd30m: 0,
+      settings: baseSettings,
+    });
+    // Проверяем, включительно у нас работают пороги или нет
+    expect(phase).toBe('trend');
+  });
+});

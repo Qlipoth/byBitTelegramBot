@@ -443,10 +443,16 @@ export function detectMarketPhase(params: {
   const p30 = delta30m.priceChangePct;
   const oi30 = delta30m.oiChangePct;
   const oi15 = delta15m.oiChangePct;
+  const cvdSupportsMove =
+    Math.abs(cvd30m) < settings.cvdThreshold || Math.sign(p30) === Math.sign(cvd30m);
 
   // 1️⃣ ТРЕНД (Используем moveThreshold из настроек)
   // Для BTC это будет 0.5%, для щитка 2.0%
-  if (Math.abs(p30) > settings.moveThreshold && Math.abs(oi15) > settings.oiThreshold) {
+  if (
+    Math.abs(p30) >= settings.moveThreshold &&
+    Math.abs(oi30) >= settings.oiThreshold &&
+    cvdSupportsMove
+  ) {
     return 'trend';
   }
 
@@ -470,7 +476,11 @@ export function detectMarketPhase(params: {
   }
 
   // 4️⃣ КУЛЬМИНАЦИЯ / ВЫХОД
-  if (Math.abs(p30) > settings.moveThreshold * 0.7 && oi15 < -settings.oiThreshold) {
+  // Цена уже пробила или почти пробила порог тренда, но OI начал резко сокращаться
+  const isExtremeMove = Math.abs(p30) >= settings.moveThreshold * 0.9;
+  const isOiCollapsing = oi15 <= -settings.oiThreshold;
+
+  if (isExtremeMove && isOiCollapsing) {
     return 'blowoff';
   }
 
@@ -480,9 +490,9 @@ export function detectMarketPhase(params: {
 const MARKET_SETTINGS = {
   // Для тяжелых монет (BTC, ETH)
   LIQUID: {
-    moveThreshold: 0.5, // Малое движение уже тренд
-    cvdThreshold: 15000, // Нужно много денег, чтобы заметить фазу
-    oiThreshold: 0.3, // Даже 0.3% OI — это серьезно
+    moveThreshold: 0.3, // Малое движение уже тренд
+    cvdThreshold: 8000, // Нужен заметный, но не экстремальный поток капитала
+    oiThreshold: 0.15, // Более мягкий порог для фиксирования набора позиций
   },
   // Для обычных альтов (SOL, XRP, ADA)
   MEDIUM: {
