@@ -5,8 +5,9 @@
   "type": "module",
   "main": "dist/bot.js",
   "scripts": {
-    "dev": "pnpm run typecheck && pnpm run start",
+    "dev": "pnpm run typecheck && pnpm test && pnpm run start",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "preview": "node dist/bot.js",
     "start": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
     "build": "node build.js",
@@ -33,7 +34,8 @@
     "esbuild": "0.27.1",
     "prettier": "^3.7.4",
     "ts-node": "^10.9.1",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^2.0.0"
   },
   "engines": {
     "node": ">=16.0.0"
