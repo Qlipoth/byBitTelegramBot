@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectMarketPhase } from '../../src/market/utils.js';
+import { detectMarketPhase } from '../../src/market/analysis.js';
 import type { MarketDelta } from '../../src/market/types.js';
 
 const baseSettings = {

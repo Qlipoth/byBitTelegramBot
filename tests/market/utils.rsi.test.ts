@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { calculateRSI } from '../../src/market/utils.js';
+import { calculateRSI } from '../../src/market/analysis.js';
 
 describe('calculateRSI', () => {
   it('возвращает нейтральный RSI (50), когда данных недостаточно', () => {

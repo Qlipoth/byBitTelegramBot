@@ -14,16 +14,8 @@ import {
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
 } from './constants.market.js';
-import {
-  calculateRSI,
-  detectTrend,
-  calculateEntryScores,
-  getSignalAgreement,
-  confirmEntry,
-  detectMarketPhase,
-  selectCoinThresholds,
-  ensureLiquidThresholdsCalibrated,
-} from './utils.js';
+import { calculateEntryScores, getSignalAgreement, confirmEntry, selectCoinThresholds, ensureLiquidThresholdsCalibrated } from './utils.js';
+import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState, SymbolValue } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
