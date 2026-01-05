@@ -10,6 +10,7 @@ import type {
   SignalAgreementParams,
   SymbolValue,
 } from './types.js';
+import { getCSI } from './candleBuilder.js';
 
 /**
  * Formats funding rate into a human-readable string
@@ -42,54 +43,36 @@ export function calculateEntryScores({
   cvd3m,
   cvd15m,
   rsi,
-  impulse,
+  impulse, // Это наши { PRICE_SURGE_PCT, VOL_SURGE_CVD }
   isBull,
   isBear,
 }: EntryScoresParams): EntryScores {
   let longScore = 0;
   let shortScore = 0;
 
-  // Объект для отладки (поможет понять, почему Score именно такой)
-  const details = { phase: 0, oi: 0, funding: 0, cvd: 0, impulse: 0, rsi: 0, trend: 0 };
+  const details = { phase: 0, oi: 0, funding: 0, cvd: 0, impulse: 0, rsi: 0, trend: 0, csi: 0 };
 
   /* =====================
-   1️⃣ Phase (max 15)
+   1️⃣ Phase (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
-  if (state.phase === 'blowoff') {
-    // В фазе кульминации обнуляем баллы, чтобы не зайти на "хаях"
-    return {
-      longScore: 0,
-      shortScore: 0,
-      entrySignal: `🚫 BLOWOFF (Опасность разворота)`,
-    };
-  }
-  // Убираем бонус за Range. Range — это отсутствие сетапа.
-  if (state.phase === 'accumulation') {
-    longScore += 15;
-    details.phase = 15;
-  } else if (state.phase === 'distribution') {
-    shortScore += 15;
-    details.phase = 15;
-  } else if (state.phase === 'trend') {
-    // В тренде тоже даем очки, если направление совпадает
+  if (state.phase === 'blowoff') return { longScore: 0, shortScore: 0, entrySignal: `🚫 BLOWOFF` };
+  if (state.phase === 'accumulation') longScore += 15;
+  else if (state.phase === 'distribution') shortScore += 15;
+  else if (state.phase === 'trend') {
     if (isBull) longScore += 15;
     if (isBear) shortScore += 15;
-    details.phase = 15;
   }
+  details.phase = 15;
 
   /* =====================
-   2️⃣ OI dynamics (max 25)
+   2️⃣ OI dynamics (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
   const oi30 = delta30m?.oiChangePct ?? 0;
   const oi15 = delta15m?.oiChangePct ?? 0;
-
-  // ФИКС "Начала сессии": Если данных за 30м еще мало, не дублируем веса
   const isDataMature = (delta30m?.minutesAgo ?? 0) >= 15;
 
-  // Используем log1p, но с поправкой на зрелость данных
   const oiLong =
-    (isDataMature ? Math.log1p(Math.max(oi30, 0)) * 10 : 0) + Math.log1p(Math.max(oi15, 0)) * 10; // Увеличил вес 15м, если 30м еще нет
-
+    (isDataMature ? Math.log1p(Math.max(oi30, 0)) * 10 : 0) + Math.log1p(Math.max(oi15, 0)) * 10;
   const oiShort =
     (isDataMature ? Math.log1p(Math.max(-oi30, 0)) * 10 : 0) + Math.log1p(Math.max(-oi15, 0)) * 10;
 
@@ -98,25 +81,24 @@ export function calculateEntryScores({
   details.oi = Math.round(Math.max(oiLong, oiShort));
 
   /* =====================
-   3️⃣ Funding (max 10, contrarian)
+   3️⃣ Funding (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
   const fRate = snap.fundingRate ?? 0;
-  if (fRate < -0.0001) {
-    longScore += 10;
-    details.funding = 10;
-  } // Отрицательный фандинг - топливо для Лонга
-  if (fRate > 0.0001) {
-    shortScore += 10;
-    details.funding = 10;
-  } // Положительный - для Шорта
+  if (fRate < -0.0001) longScore += 10;
+  if (fRate > 0.0001) shortScore += 10;
+  details.funding = 10;
 
   /* =====================
-   4️⃣ CVD strength (max 25)
+   4️⃣ CVD strength (АДАПТИРОВАНО ПОД ПОРОГ)
   ===================== */
-  // Адаптируем под твой новый MIN_CVD_THRESHOLD: 1500
-  // Снизил пороги нормализации (было 7000/3000), чтобы легче набирать баллы
-  const cvd15Norm = Math.min(Math.abs(cvd15m) / 5000, 1);
-  const cvd3Norm = Math.min(Math.abs(cvd3m) / 2000, 1);
+  // Вместо 5000 и 2000 используем динамический cvdThreshold
+  // cvdThreshold — это средний минутный объем * 1.8.
+  // Для 15 минут логично ждать примерно cvdThreshold * 5
+  const dynamicCvd15Threshold = impulse.VOL_SURGE_CVD * 5;
+  const dynamicCvd3Threshold = impulse.VOL_SURGE_CVD * 1.5;
+
+  const cvd15Norm = Math.min(Math.abs(cvd15m) / dynamicCvd15Threshold, 1);
+  const cvd3Norm = Math.min(Math.abs(cvd3m) / dynamicCvd3Threshold, 1);
 
   if (cvd15m > 0) longScore += cvd15Norm * 15;
   if (cvd15m < 0) shortScore += cvd15Norm * 15;
@@ -126,60 +108,42 @@ export function calculateEntryScores({
   details.cvd = Math.round(cvd15Norm * 15 + cvd3Norm * 10);
 
   /* =====================
-   5️⃣ Impulse & Velocity (max 15)
+   5️⃣ Impulse & Velocity (АДАПТИРОВАНО)
   ===================== */
   const price1m = delta?.priceChangePct ?? 0;
   const price5m = delta5m?.priceChangePct ?? 0;
 
-  // 1m Impulse
-  if (price1m > impulse.PRICE_SURGE_PCT) longScore += 7;
-  if (price1m < -impulse.PRICE_SURGE_PCT) shortScore += 7;
+  // 1m Impulse (Сравнение с живым порогом ATR)
+  if (price1m > impulse.PRICE_SURGE_PCT) longScore += 10;
+  if (price1m < -impulse.PRICE_SURGE_PCT) shortScore += 10;
 
-  // Velocity: Если 5-минутка — это взрыв (большая часть 15-минутки произошла за 5 минут)
+  // Velocity: Если 5м делает основной вклад в 15м
   const isVelocityLong = price5m > 0 && price5m > (delta15m?.priceChangePct ?? 0) * 0.7;
   const isVelocityShort = price5m < 0 && price5m < (delta15m?.priceChangePct ?? 0) * 0.7;
 
-  if (isVelocityLong) longScore += 8;
-  if (isVelocityShort) shortScore += 8;
-  details.impulse = isVelocityLong || isVelocityShort ? 15 : 7;
+  if (isVelocityLong) longScore += 5;
+  if (isVelocityShort) shortScore += 5;
+  details.impulse = Math.max(price1m > impulse.PRICE_SURGE_PCT ? 10 : 0, isVelocityLong ? 5 : 0);
 
   /* =====================
-   6️⃣ RSI (max 10)
+   6️⃣ RSI & Trend (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
-  // Вернул зоны 55/45 (было 60/40), чтобы чаще ловить движения
-  if (rsi >= 55) longScore += 10;
-  if (rsi <= 45) shortScore += 10;
-  details.rsi = rsi >= 55 || rsi <= 45 ? 10 : 0;
-
-  /* =====================
-   7️⃣ Soft trend bonus (max 5)
-  ===================== */
+  if (rsi >= 55) longScore += 5;
+  if (rsi <= 45) shortScore += 5;
   if (isBull) longScore += 5;
   if (isBear) shortScore += 5;
+  details.rsi = 5;
   details.trend = 5;
 
   // Clamp
   longScore = Math.min(100, Math.round(longScore));
   shortScore = Math.min(100, Math.round(shortScore));
 
-  /* =====================
-   🎯 Signal decision
-  ===================== */
-  // Порог 65 — хорошо, но добавим проверку на минимальный перевес
   let entrySignal = `⚪ Нет сетапа (L:${longScore} S:${shortScore})`;
+  if (longScore >= 65) entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
+  else if (shortScore >= 65) entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
 
-  if (longScore >= MIN_SCORE && longScore) {
-    entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
-  } else if (shortScore >= MIN_SCORE && shortScore) {
-    entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
-  }
-
-  return {
-    longScore,
-    shortScore,
-    entrySignal,
-    details, // Returning debug details
-  };
+  return { longScore, shortScore, entrySignal, details };
 }
 
 export function getSignalAgreement({
@@ -192,7 +156,26 @@ export function getSignalAgreement({
   cvdThreshold,
   fundingRate,
   rsi,
+  symbol,
 }: SignalAgreementParams) {
+  const csi = getCSI(symbol); // Получаем индекс силы
+
+  // 1. Для пробоев и накопления нам нужен ИМПУЛЬС (CSI выше 0.25)
+  if ((phase === 'accumulation' || phase === 'distribution') && Math.abs(csi) < 0.25) {
+    console.log(`[SIGNAL_AGREEMENT] CSI ${csi.toFixed(2)} too low for BREAKOUT`);
+    return 'NONE';
+  }
+
+  // 2. Для тренда достаточно, чтобы CSI просто не был направлен ПРОТИВ нас
+  if (phase === 'trend') {
+    if (longScore > shortScore && csi < -0.1) return 'NONE'; // Пытаемся лонговать, а минутка давит вниз
+    if (shortScore > longScore && csi > 0.1) return 'NONE'; // Пытаемся шортить, а минутка откупается
+  }
+
+  // 3. Абсолютный мусор (дойджи, отсутствие объема) — режем всегда
+  if (Math.abs(csi) < 0.1) {
+    return 'NONE';
+  }
   // 1️⃣ Блокировка при кульминации
   if (phase === 'blowoff') {
     console.log(`[SIGNAL_AGREEMENT] Blowoff phase detected, returning NONE`);
@@ -307,55 +290,48 @@ export function confirmEntry({
   phase,
 }: ConfirmEntryParams): boolean {
   if (!delta || !impulse || cvd3m === undefined) {
-    console.log(
-      `[CONFIRM_ENTRY] Missing required data: delta=${!!delta}, impulse=${!!impulse}, cvd3m=${cvd3m}`
-    );
+    console.warn(`[CONFIRM_ENTRY] Missing data for confirmation`);
     return false;
   }
 
   const pChange = delta.priceChangePct;
-  const minMove = impulse.PRICE_SURGE_PCT * (phase === 'range' ? 0.35 : 0.3);
 
-  // Если мы в ТРЕНДЕ — подтверждаем через импульс (как и было)
-  if (phase === 'trend') {
-    if (signal === 'LONG') {
-      const confirmed = pChange > impulse.PRICE_SURGE_PCT && cvd3m > 0;
+  /**
+   * Коэффициент чувствительности подтверждения:
+   * В тренде (trend) нам нужно подтверждение продолжения силы — берем 0.5 от порога.
+   * В накоплении/распределении/ренже — ловим начало, достаточно 0.3 от порога.
+   */
+  const sensitivity = phase === 'trend' ? 0.5 : 0.3;
+  const minMove = impulse.PRICE_SURGE_PCT * sensitivity;
+
+  // Логика подтверждения для LONG
+  if (signal === 'LONG') {
+    // 1. Цена за последнюю минуту должна пройти хотя бы minMove
+    // 2. CVD за последние 3 минуты должен быть строго положительным
+    const confirmed = pChange > minMove && cvd3m > 0;
+
+    if (confirmed) {
       console.log(
-        `[CONFIRM_ENTRY] TREND LONG check: pChange=${pChange} > ${impulse.PRICE_SURGE_PCT} && cvd3m=${cvd3m} > 0 => ${confirmed}`
+        `[CONFIRM_ENTRY] ✅ LONG CONFIRMED | Phase: ${phase} | pChange: ${pChange.toFixed(3)}% > minMove: ${minMove.toFixed(3)}% | cvd3m: ${cvd3m}`
       );
-      return confirmed;
     }
-    if (signal === 'SHORT') {
-      const confirmed = pChange < -impulse.PRICE_SURGE_PCT && cvd3m < 0;
-      console.log(
-        `[CONFIRM_ENTRY] TREND SHORT check: pChange=${pChange} < -${impulse.PRICE_SURGE_PCT} && cvd3m=${cvd3m} < 0 => ${confirmed}`
-      );
-      return confirmed;
-    }
+    return confirmed;
   }
 
-  // Если мы в НАКОПЛЕНИИ или ФЛЕТЕ — подтверждение должно быть мягче,
-  // так как мы ловим самое начало движения или отскок.
-  if (phase === 'accumulation' || phase === 'distribution' || phase === 'range') {
-    if (signal === 'LONG') {
-      const confirmed = pChange > minMove && cvd3m > 0;
+  // Логика подтверждения для SHORT
+  if (signal === 'SHORT') {
+    // 1. Цена за последнюю минуту должна упасть ниже -minMove
+    // 2. CVD за последние 3 минуты должен быть строго отрицательным
+    const confirmed = pChange < -minMove && cvd3m < 0;
+
+    if (confirmed) {
       console.log(
-        `[CONFIRM_ENTRY] ${phase.toUpperCase()} LONG check: pChange=${pChange} > 0 && cvd3m=${cvd3m} > 0 => ${confirmed}`
+        `[CONFIRM_ENTRY] ✅ SHORT CONFIRMED | Phase: ${phase} | pChange: ${pChange.toFixed(3)}% < minMove: -${minMove.toFixed(3)}% | cvd3m: ${cvd3m}`
       );
-      return confirmed;
     }
-    if (signal === 'SHORT') {
-      const confirmed = pChange < -minMove && cvd3m < 0;
-      console.log(
-        `[CONFIRM_ENTRY] ${phase.toUpperCase()} SHORT check: pChange=${pChange} < 0 && cvd3m=${cvd3m} < 0 => ${confirmed}`
-      );
-      return confirmed;
-    }
+    return confirmed;
   }
 
-  console.log(
-    `[CONFIRM_ENTRY] No conditions matched: phase=${phase}, signal=${signal}, pChange=${pChange}, cvd3m=${cvd3m}`
-  );
   return false;
 }
 

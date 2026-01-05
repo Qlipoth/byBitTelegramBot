@@ -14,7 +14,13 @@ import {
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
 } from './constants.market.js';
-import { calculateEntryScores, getSignalAgreement, confirmEntry, selectCoinThresholds, ensureLiquidThresholdsCalibrated } from './utils.js';
+import {
+  calculateEntryScores,
+  getSignalAgreement,
+  confirmEntry,
+  selectCoinThresholds,
+  ensureLiquidThresholdsCalibrated,
+} from './utils.js';
 import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState, SymbolValue } from './types.js';
@@ -60,8 +66,6 @@ export async function initializeMarketWatcher(onAlert: (msg: string) => void) {
 export async function startMarketWatcher(symbol: string, onAlert: (msg: string) => void) {
   const INTERVAL = INTERVALS.ONE_MIN;
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
-
-  const impulse = isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS;
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
@@ -109,7 +113,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       }
 
       const snaps = getSnapshots(symbol);
-      if (snaps.length < 5) return;
+      if (snaps.length < 15) return;
 
       // 1m импульс — сравнение с предыдущим снапом
       const prev = snaps[snaps.length - 2];
@@ -182,6 +186,26 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // =====================
       // Entry Score Calculation
       // =====================
+
+      // 1. Получаем динамические пороги из нашего нового модуля
+      const dynamicThresholds = getCvdThreshold(symbol);
+
+      // 2. Создаем гибридный объект impulse
+      const impulse = {
+        // Вместо константы 0.6 или 0.2 берем то, что посчитал ATR
+        PRICE_SURGE_PCT: dynamicThresholds.moveThreshold,
+
+        // Вместо магических цифр объема берем живой порог аномалии
+        VOL_SURGE_CVD: dynamicThresholds.cvdThreshold,
+
+        // Остальные константы (OI) можем пока оставить из твоих конфигов
+        OI_INCREASE_PCT: isPriorityCoin
+          ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
+          : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
+        OI_SURGE_PCT: isPriorityCoin
+          ? LIQUID_IMPULSE_THRESHOLDS.OI_SURGE_PCT
+          : BASE_IMPULSE_THRESHOLDS.OI_SURGE_PCT,
+      };
       const { entrySignal, longScore, shortScore, details } = calculateEntryScores({
         state,
         delta,
@@ -194,7 +218,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         rsi: rsi || 50,
         isBull: trendObj.isBull,
         isBear: trendObj.isBear,
-        impulse: isPriorityCoin ? LIQUID_IMPULSE_THRESHOLDS : BASE_IMPULSE_THRESHOLDS,
+        impulse,
       });
 
       logData.scores = { longScore, shortScore };
@@ -214,6 +238,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         cvdThreshold,
         fundingRate: Number(snap.fundingRate || 0),
         rsi,
+        symbol,
       });
 
       logData.signal = signal;

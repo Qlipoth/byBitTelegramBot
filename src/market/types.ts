@@ -35,19 +35,12 @@ export interface MarketState {
 export interface Delta {
   priceChangePct: number;
 }
-export interface ImpulseThresholds {
-  PRICE_SURGE_PCT: number;
-  VOLUME_SPIKE_PCT: number;
-}
 
 export interface IMPULSE_THRESHOLDS_CONFIG {
-  VOLUME_SPIKE_PCT: number;
-  VOLUME_HIGH_PCT: number;
-  PRICE_STABLE_PCT: number;
-  PRICE_DROP_PCT: number;
   PRICE_SURGE_PCT: number;
   OI_INCREASE_PCT: number;
   OI_SURGE_PCT: number;
+  VOL_SURGE_CVD: number;
 }
 
 export interface EntryScores {
@@ -90,13 +83,14 @@ export interface SignalAgreementParams {
   cvdThreshold: number;
   fundingRate: number;
   rsi: number;
+  symbol: string;
 }
 
 export interface ConfirmEntryParams {
   signal: 'LONG' | 'SHORT';
   delta: Delta;
   cvd3m: number;
-  impulse: ImpulseThresholds;
+  impulse: IMPULSE_THRESHOLDS_CONFIG;
   phase: MarketPhase;
 }
 

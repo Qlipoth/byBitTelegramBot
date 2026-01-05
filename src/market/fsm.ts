@@ -1,5 +1,6 @@
 // src/market/fsm.ts
 import { tradingState } from '../core/tradingState.js';
+import { getATR, getCSI, getCvdThreshold } from './candleBuilder.js';
 
 export type TradeSide = 'LONG' | 'SHORT';
 
@@ -194,110 +195,69 @@ export function shouldExitPosition({
 
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
   const timeInPosition = now - (fsm.openedAt || 0);
-  const isMicroProfit = pnlPct > 0 && pnlPct < EXIT_THRESHOLDS.MICRO_PROFIT_HOLD_PCT;
-  const isMajorSymbol = symbol === 'BTCUSDT' || symbol === 'ETHUSDT';
-  const cvdReversalThreshold = isMajorSymbol
-    ? EXIT_THRESHOLDS.CVD_REVERSAL
-    : EXIT_THRESHOLDS.CVD_REVERSAL_ALT;
-  console.log(`[FSM] Проверка условий выхода. Текущий PnL: ${pnlPct.toFixed(2)}%`);
 
-  // 1️⃣ КРИТИЧЕСКИЙ ВЫХОД: Blow-off (Кульминация)
-  // Если мы в профите и началась фаза Blow-off — это идеальный момент зафиксироваться на сквизе
-  if (phase === 'blowoff' && pnlPct > 0) {
-    console.log(`[FSM] Выход по Blow-off. Фаза: ${phase}, PnL: ${pnlPct.toFixed(2)}%`);
-    return { exit: true, reason: 'BLOWOFF' };
-  }
+  // 1. ДИНАМИЧЕСКИЕ ПОРОГИ (Вместо статичных EXIT_THRESHOLDS)
+  const atr = getATR(symbol);
+  const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+  const csi = getCSI(symbol);
 
-  // 2️⃣ ЖЁСТКИЙ СТОП-ЛОСС
-  if (pnlPct <= -EXIT_THRESHOLDS.STOP_LOSS_PCT) {
-    console.log(
-      `[FSM] Сработал стоп-лосс. Текущий убыток: ${pnlPct.toFixed(2)}% (порог: -${EXIT_THRESHOLDS.STOP_LOSS_PCT}%)`
-    );
+  // Динамический стоп-лосс: если ATR вырос, даем позиции больше "дышать"
+  // Но не меньше твоего базового стопа
+  const dynamicStopLoss = Math.max((atr / currentPrice) * 100 * 1.5, EXIT_THRESHOLDS.STOP_LOSS_PCT);
+
+  // 2. ЖЕСТКИЙ СТОП-ЛОСС (Теперь динамический)
+  if (pnlPct <= -dynamicStopLoss) {
     return { exit: true, reason: 'STOP_LOSS' };
   }
 
-  // 3️⃣ ТЕЙК-ПРОФИТ (С логикой затухания)
+  // В shouldExitPosition замени условие Blow-off:
+  if (phase === 'blowoff' && pnlPct > moveThreshold) {
+    // Выходим, если профит больше, чем типичный импульс этой монеты
+    return { exit: true, reason: 'BLOWOFF' };
+  }
+
+  const isMicroProfit = pnlPct > 0 && pnlPct < 0.2; // Фиксированный порог "шумового" профита
+
+  // Если профит копеечный, игнорируем мелкие развороты CVD, даем цене шанс
+  if (isMicroProfit && Math.abs(csi) < 0.4) {
+    return { exit: false, reason: 'NONE' };
+  }
+
+  // Защита от дорогого фандинга (оставляем как было)
+  if (fsm.side === 'LONG' && fundingRate > 0.0005) return { exit: true, reason: 'FUNDING' };
+  if (fsm.side === 'SHORT' && fundingRate < -0.0005) return { exit: true, reason: 'FUNDING' };
+
+  // 4. ДИНАМИЧЕСКИЙ РЕВЕРС CVD
+  // Выходим, если против нас за 3 минуты налили больше 2-х норм аномального объема
+  const dynamicCvdReversal = cvdThreshold * 2;
+  const isCvdOpposed =
+    fsm.side === 'LONG' ? cvd3m < -dynamicCvdReversal : cvd3m > dynamicCvdReversal;
+
+  if (timeInPosition > 60_000 && isCvdOpposed) {
+    // Доп. проверка: действительно ли свеча против нас "полная"?
+    if ((fsm.side === 'LONG' && csi < -0.3) || (fsm.side === 'SHORT' && csi > 0.3)) {
+      return { exit: true, reason: 'CVD_REVERSAL' };
+    }
+  }
+
+  // 5. ТЕЙК-ПРОФИТ С ЗАТУХАНИЕМ
   if (pnlPct >= EXIT_THRESHOLDS.TAKE_PROFIT_PCT) {
-    // Если профит хороший, выходим, как только сигнал пропадает или баллы падают
     const currentScore = fsm.side === 'LONG' ? longScore : shortScore;
-    if (signal === 'NONE' || currentScore < 40) {
-      console.log(
-        `[FSM] Выход по тейк-профиту. PnL: ${pnlPct.toFixed(2)}%, ` +
-          `Текущий счёт: ${currentScore}, Сигнал: ${signal}`
-      );
+    // Если импульс выдохся (CSI близок к 0) и баллы упали — забираем профит
+    if (Math.abs(csi) < 0.1 || currentScore < 40) {
       return { exit: true, reason: 'TAKE_PROFIT_SIGNAL_WEAK' };
     }
   }
 
-  // 4️⃣ СЛОМ СТРУКТУРЫ (Реверс баллов)
-  // Если баллы противоположной стороны стали выше 70 — это опасный разворот
-  if (fsm.side === 'LONG' && shortScore > 70) {
-    console.log(`[FSM] Выход по смене структуры. SHORT счёт вырос до ${shortScore}`);
-    return { exit: true, reason: 'STRUCTURE_REVERSAL' };
-  }
-  if (fsm.side === 'SHORT' && longScore > 70) {
-    console.log(`[FSM] Выход по смене структуры. LONG счёт вырос до ${longScore}`);
+  // 6. СЛОМ СТРУКТУРЫ (Реверс баллов — без изменений)
+  if ((fsm.side === 'LONG' && shortScore > 75) || (fsm.side === 'SHORT' && longScore > 75)) {
     return { exit: true, reason: 'STRUCTURE_REVERSAL' };
   }
 
-  // 5️⃣ ВЫХОД ПО ФАНДИНГУ (Защита от перегрева)
-  if (fsm.side === 'LONG' && fundingRate > EXIT_THRESHOLDS.FUNDING_LONG) {
-    console.log(
-      `[FSM] Выход по невыгодному фандингу. Текущий: ${fundingRate}, ` +
-        `Порог: ${EXIT_THRESHOLDS.FUNDING_LONG}`
-    );
-    return { exit: true, reason: 'FUNDING' };
-  }
-  if (fsm.side === 'SHORT' && fundingRate < EXIT_THRESHOLDS.FUNDING_SHORT) {
-    console.log(
-      `[FSM] Выход по невыгодному фандингу. Текущий: ${fundingRate}, ` +
-        `Порог: ${EXIT_THRESHOLDS.FUNDING_SHORT}`
-    );
-    return { exit: true, reason: 'FUNDING' };
-  }
-
-  // Если мы слегка в плюсе, игнорируем пугливые сигналы на выход
-  if (isMicroProfit) {
-    console.log(
-      `[FSM] Удерживаем позицию: PnL ${pnlPct.toFixed(2)}% меньше ` +
-        `${EXIT_THRESHOLDS.MICRO_PROFIT_HOLD_PCT}%`
-    );
-    return { exit: false, reason: 'NONE' };
-  }
-
-  // 6️⃣ АГРЕССИВНЫЙ CVD ПРОТИВ НАС (Локальный разворот)
-  // Используем cvd3m для детекции внезапного давления маркет-ордеров
-  if (timeInPosition > 60_000 && fsm.side === 'LONG' && cvd3m < -cvdReversalThreshold) {
-    console.log(
-      `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
-        `Порог: -${cvdReversalThreshold}`
-    );
-    return { exit: true, reason: 'CVD_REVERSAL' };
-  }
-  if (timeInPosition > 60_000 && fsm.side === 'SHORT' && cvd3m > cvdReversalThreshold) {
-    console.log(
-      `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
-        `Порог: ${cvdReversalThreshold}`
-    );
-    return { exit: true, reason: 'CVD_REVERSAL' };
-  }
-
-  // 7️⃣ ТАЙМАУТ (Защита от "залипания" в сделке)
-  // Для флета (range) таймаут можно сделать короче, для тренда — дольше
-  const maxTime = phase === 'range' ? CONFIG.MAX_RANGE_HOLD : CONFIG.MAX_TREND_HOLD;
-  if (fsm.openedAt && timeInPosition > maxTime) {
-    if (pnlPct > 0) {
-      console.log(
-        `[FSM] Таймаут пропущен: позиция в плюсе ${pnlPct.toFixed(2)}%, ` +
-          `в позиции ${Math.round(timeInPosition / 1000)}с`
-      );
-    } else {
-      console.log(
-        `[FSM] Выход по таймауту. В позиции: ${Math.round(timeInPosition / 1000)}с, ` +
-          `Макс. время (${phase}): ${Math.round(maxTime / 1000)}с`
-      );
-      return { exit: true, reason: 'TIMEOUT' };
-    }
+  // 7. ТАЙМАУТ (Защита от залипания)
+  const maxTime = phase === 'range' ? 10 * 60000 : 30 * 60000; // 10м для ренджа, 30м для тренда
+  if (timeInPosition > maxTime && pnlPct < 0.1) {
+    return { exit: true, reason: 'TIMEOUT' };
   }
 
   return { exit: false, reason: 'NONE' };
