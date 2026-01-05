@@ -262,6 +262,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
           ? shouldExitPosition({
               fsm,
               signal,
+              symbol,
               cvd3m,
               fundingRate: snap.fundingRate,
               currentPrice: snap.price,

@@ -146,7 +146,9 @@ export function fsmStep(
 export const EXIT_THRESHOLDS = {
   STOP_LOSS_PCT: 1.2, // 0.6% стоп
   TAKE_PROFIT_PCT: 2, // минимум 1.2% для разрешения выхода
-  CVD_REVERSAL: 500000, // агрессивный CVD против позиции
+  CVD_REVERSAL: 500000, // агрессивный CVD против позиции для BTC/ETH
+  CVD_REVERSAL_ALT: 150000, // агрессивный CVD для альтов
+  MICRO_PROFIT_HOLD_PCT: 0.5, // не выходим, если профит еще микроскопический
   FUNDING_LONG: 0.0006,
   FUNDING_SHORT: -0.0006,
   MAX_HOLD_TIME: 30 * 60 * 1000,
@@ -167,6 +169,7 @@ export function shouldExitPosition({
   fsm,
   signal,
   phase, // Добавляем фазу
+  symbol,
   cvd3m,
   fundingRate,
   now,
@@ -178,6 +181,7 @@ export function shouldExitPosition({
   fsm: FSMContext;
   signal: string;
   phase: string;
+  symbol: string;
   cvd3m: number;
   fundingRate: number;
   now: number;
@@ -190,6 +194,11 @@ export function shouldExitPosition({
 
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
   const timeInPosition = now - (fsm.openedAt || 0);
+  const isMicroProfit = pnlPct > 0 && pnlPct < EXIT_THRESHOLDS.MICRO_PROFIT_HOLD_PCT;
+  const isMajorSymbol = symbol === 'BTCUSDT' || symbol === 'ETHUSDT';
+  const cvdReversalThreshold = isMajorSymbol
+    ? EXIT_THRESHOLDS.CVD_REVERSAL
+    : EXIT_THRESHOLDS.CVD_REVERSAL_ALT;
   console.log(`[FSM] Проверка условий выхода. Текущий PnL: ${pnlPct.toFixed(2)}%`);
 
   // 1️⃣ КРИТИЧЕСКИЙ ВЫХОД: Blow-off (Кульминация)
@@ -247,19 +256,28 @@ export function shouldExitPosition({
     return { exit: true, reason: 'FUNDING' };
   }
 
+  // Если мы слегка в плюсе, игнорируем пугливые сигналы на выход
+  if (isMicroProfit) {
+    console.log(
+      `[FSM] Удерживаем позицию: PnL ${pnlPct.toFixed(2)}% меньше ` +
+        `${EXIT_THRESHOLDS.MICRO_PROFIT_HOLD_PCT}%`
+    );
+    return { exit: false, reason: 'NONE' };
+  }
+
   // 6️⃣ АГРЕССИВНЫЙ CVD ПРОТИВ НАС (Локальный разворот)
   // Используем cvd3m для детекции внезапного давления маркет-ордеров
-  if (timeInPosition > 60_000 && fsm.side === 'LONG' && cvd3m < -EXIT_THRESHOLDS.CVD_REVERSAL) {
+  if (timeInPosition > 60_000 && fsm.side === 'LONG' && cvd3m < -cvdReversalThreshold) {
     console.log(
       `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
-        `Порог: -${EXIT_THRESHOLDS.CVD_REVERSAL}`
+        `Порог: -${cvdReversalThreshold}`
     );
     return { exit: true, reason: 'CVD_REVERSAL' };
   }
-  if (timeInPosition > 60_000 && fsm.side === 'SHORT' && cvd3m > EXIT_THRESHOLDS.CVD_REVERSAL) {
+  if (timeInPosition > 60_000 && fsm.side === 'SHORT' && cvd3m > cvdReversalThreshold) {
     console.log(
       `[FSM] Выход по сильному давлению CVD. Текущий: ${cvd3m}, ` +
-        `Порог: ${EXIT_THRESHOLDS.CVD_REVERSAL}`
+        `Порог: ${cvdReversalThreshold}`
     );
     return { exit: true, reason: 'CVD_REVERSAL' };
   }
@@ -268,11 +286,18 @@ export function shouldExitPosition({
   // Для флета (range) таймаут можно сделать короче, для тренда — дольше
   const maxTime = phase === 'range' ? CONFIG.MAX_RANGE_HOLD : CONFIG.MAX_TREND_HOLD;
   if (fsm.openedAt && timeInPosition > maxTime) {
-    console.log(
-      `[FSM] Выход по таймауту. В позиции: ${Math.round(timeInPosition / 1000)}с, ` +
-        `Макс. время (${phase}): ${Math.round(maxTime / 1000)}с`
-    );
-    return { exit: true, reason: 'TIMEOUT' };
+    if (pnlPct > 0) {
+      console.log(
+        `[FSM] Таймаут пропущен: позиция в плюсе ${pnlPct.toFixed(2)}%, ` +
+          `в позиции ${Math.round(timeInPosition / 1000)}с`
+      );
+    } else {
+      console.log(
+        `[FSM] Выход по таймауту. В позиции: ${Math.round(timeInPosition / 1000)}с, ` +
+          `Макс. время (${phase}): ${Math.round(maxTime / 1000)}с`
+      );
+      return { exit: true, reason: 'TIMEOUT' };
+    }
   }
 
   return { exit: false, reason: 'NONE' };
