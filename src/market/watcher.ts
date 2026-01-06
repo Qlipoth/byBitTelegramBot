@@ -21,6 +21,7 @@ import {
   selectCoinThresholds,
   ensureLiquidThresholdsCalibrated,
 } from './utils.js';
+import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
 import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type { MarketState, SymbolValue } from './types.js';
@@ -164,6 +165,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // Для сигнальной логики надёжнее использовать изменения цены по снапшотам.
       const pricePercentChange = delta15m.priceChangePct;
       const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+      const habrMode = adaptiveBollingerStrategy.isSupported(symbol);
 
       state.phase = has30m
         ? detectMarketPhase({
@@ -184,42 +186,75 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       logData.fundingRate = snap.fundingRate;
 
       // =====================
-      // Entry Score Calculation
+      // Entry Signal Calculation (classic vs Habr)
       // =====================
+      let entrySignal: string;
+      let longScore = 0;
+      let shortScore = 0;
+      let details: Record<string, unknown> | undefined;
+      let signal = 'NONE';
+      let impulseForClassic:
+        | {
+            PRICE_SURGE_PCT: number;
+            VOL_SURGE_CVD: number;
+            OI_INCREASE_PCT: number;
+            OI_SURGE_PCT: number;
+          }
+        | null = null;
 
-      // 1. Получаем динамические пороги из нашего нового модуля
-      const dynamicThresholds = getCvdThreshold(symbol);
+      if (habrMode) {
+        const adaptive = adaptiveBollingerStrategy.getSignal(symbol);
+        entrySignal = adaptive.entrySignal;
+        longScore = adaptive.longScore;
+        shortScore = adaptive.shortScore;
+        signal = adaptive.signal;
+        details = adaptive.details;
+        logData.habr = { ready: adaptive.ready };
+      } else {
+        impulseForClassic = {
+          PRICE_SURGE_PCT: moveThreshold,
+          VOL_SURGE_CVD: cvdThreshold,
+          OI_INCREASE_PCT: isPriorityCoin
+            ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
+            : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
+          OI_SURGE_PCT: isPriorityCoin
+            ? LIQUID_IMPULSE_THRESHOLDS.OI_SURGE_PCT
+            : BASE_IMPULSE_THRESHOLDS.OI_SURGE_PCT,
+        };
 
-      // 2. Создаем гибридный объект impulse
-      const impulse = {
-        // Вместо константы 0.6 или 0.2 берем то, что посчитал ATR
-        PRICE_SURGE_PCT: dynamicThresholds.moveThreshold,
+        const classicScores = calculateEntryScores({
+          state,
+          delta,
+          delta15m,
+          delta30m,
+          delta5m,
+          snap,
+          cvd3m: cvd3m || 0,
+          cvd15m: cvd15m || 0,
+          rsi: rsi || 50,
+          isBull: trendObj.isBull,
+          isBear: trendObj.isBear,
+          impulse: impulseForClassic,
+        });
 
-        // Вместо магических цифр объема берем живой порог аномалии
-        VOL_SURGE_CVD: dynamicThresholds.cvdThreshold,
+        entrySignal = classicScores.entrySignal;
+        longScore = classicScores.longScore;
+        shortScore = classicScores.shortScore;
+        details = classicScores.details;
 
-        // Остальные константы (OI) можем пока оставить из твоих конфигов
-        OI_INCREASE_PCT: isPriorityCoin
-          ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
-          : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
-        OI_SURGE_PCT: isPriorityCoin
-          ? LIQUID_IMPULSE_THRESHOLDS.OI_SURGE_PCT
-          : BASE_IMPULSE_THRESHOLDS.OI_SURGE_PCT,
-      };
-      const { entrySignal, longScore, shortScore, details } = calculateEntryScores({
-        state,
-        delta,
-        delta15m,
-        delta30m,
-        delta5m,
-        snap,
-        cvd3m: cvd3m || 0,
-        cvd15m: cvd15m || 0,
-        rsi: rsi || 50,
-        isBull: trendObj.isBull,
-        isBear: trendObj.isBear,
-        impulse,
-      });
+        signal = getSignalAgreement({
+          longScore,
+          shortScore,
+          phase: state.phase,
+          pricePercentChange,
+          moveThreshold,
+          cvd15m: cvd15m || 0,
+          cvdThreshold,
+          fundingRate: Number(snap.fundingRate || 0),
+          rsi,
+          symbol,
+        });
+      }
 
       logData.scores = { longScore, shortScore };
       logData.details = details;
@@ -228,19 +263,6 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // =====================
       // Signal Agreement Check
       // =====================
-      const signal = getSignalAgreement({
-        longScore,
-        shortScore,
-        phase: state.phase,
-        pricePercentChange,
-        moveThreshold,
-        cvd15m: cvd15m || 0,
-        cvdThreshold,
-        fundingRate: Number(snap.fundingRate || 0),
-        rsi,
-        symbol,
-      });
-
       logData.signal = signal;
 
       console.log('==============================================');
@@ -255,12 +277,14 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // Step the FSM
 
       // Legacy confirmation check for backward compatibility
-      if (signal === 'LONG' || signal === 'SHORT') {
+      if (habrMode) {
+        confirmed = adaptiveBollingerStrategy.confirmEntry(symbol, signal as 'LONG' | 'SHORT' | 'NONE');
+      } else if (signal === 'LONG' || signal === 'SHORT') {
         confirmed = confirmEntry({
           signal,
           delta: delta5m,
           cvd3m: cvd3m || 0,
-          impulse,
+          impulse: impulseForClassic!,
           phase: state.phase,
         });
         console.log('2) confirmed value:', confirmed);

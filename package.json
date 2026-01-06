@@ -11,7 +11,8 @@
     "preview": "node dist/bot.js",
     "start": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
     "build": "node build.js",
-    "build:prod": "NODE_ENV=production node build.js"
+    "build:prod": "NODE_ENV=production node build.js",
+    "backtest:adaptive": "node --loader ts-node/esm src/backtest/adaptiveBollingerBacktest.ts"
   },
   "keywords": ["bybit", "trading", "bot", "telegram", "crypto"],
   "author": "Qlipoth",

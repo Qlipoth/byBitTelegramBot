@@ -158,3 +158,38 @@ export function calcPercentChange(symbol: string, minutes: number = 15) {
   const price15mAgo = state.history.at(-minutes)!.close;
   return ((state.current.close - price15mAgo) / price15mAgo) * 100;
 }
+
+export interface HistoricalCandleInput {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export function ingestHistoricalCandle(symbol: string, candle: HistoricalCandleInput) {
+  initSymbol(symbol);
+  const state = candleState[symbol]!;
+
+  if (state.current) {
+    state.history.push(state.current);
+    if (state.history.length > CONFIG.HISTORY_LIMIT) {
+      state.history.shift();
+    }
+  }
+
+  state.current = {
+    minute: Math.floor(candle.timestamp / 60000),
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+    volume: candle.volume,
+  };
+
+  state.atr = calculateATRFromCandles(state.history, 14);
+
+  const lastVols = state.history.slice(-CONFIG.VOLUME_AVG_PERIOD).map(c => c.volume);
+  state.avgVolume = lastVols.reduce((a, b) => a + b, 0) / (lastVols.length || 1);
+}
