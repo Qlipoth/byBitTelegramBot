@@ -1,3 +1,4 @@
+import dayjs from 'dayjs';
 import { saveSnapshot, getSnapshots } from './snapshotStore.js';
 import { compareSnapshots } from './compare.js';
 import {
@@ -102,7 +103,8 @@ export async function startMarketWatcher(
   const customCvdProvider = options.cvdProvider;
   const INTERVAL = options.intervalMs ?? INTERVALS.ONE_MIN;
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
-  const entryMode = options.entryMode ?? 'adaptive';
+  const entryMode = options.entryMode ?? 'classic';
+  const useSnapshotTime = options.enableRealtime === false;
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
@@ -116,13 +118,12 @@ export async function startMarketWatcher(
   const tick = async () => {
     try {
       const logData: Record<string, any> = {};
-      const snap = await fetchSnapshot(symbol);
-      if (!snap) {
+      const rawSnap = await fetchSnapshot(symbol);
+      if (!rawSnap) {
         return false;
       }
-      const now = Date.now();
-      saveSnapshot(snap);
-      const referenceTs = snap.timestamp;
+      const now = useSnapshotTime ? rawSnap.timestamp : Date.now();
+      const referenceTs = rawSnap.timestamp;
       const cvdLookup = (minutes: number) =>
         customCvdProvider
           ? customCvdProvider(symbol, minutes, referenceTs)
@@ -131,6 +132,14 @@ export async function startMarketWatcher(
       const cvd3m = cvdLookup(3);
       const cvd15m = cvdLookup(15);
       const cvd30m = cvdLookup(30);
+      const snap: MarketSnapshot = {
+        ...rawSnap,
+        cvd1m,
+        cvd3m,
+        cvd15m,
+        cvd30m,
+      };
+      saveSnapshot(snap);
       logData.cvd = {
         cvd1m,
         cvd3m,
@@ -155,7 +164,7 @@ export async function startMarketWatcher(
         fsm.state = 'OPEN';
         fsm.side = restoredPos.side;
         fsm.entryPrice = restoredPos.entryPrice;
-        fsm.openedAt = Date.now();
+        fsm.openedAt = restoredPos.entryTime ?? Date.now();
       }
 
       const snaps = getSnapshots(symbol);
@@ -431,11 +440,13 @@ export async function startMarketWatcher(
           price: snap.price,
           stopPrice,
           balance,
+          now,
         });
 
         if (success) {
+          const entryTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
           console.log(
-            `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance}`
+            `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance} | Time: ${entryTimeStr}`
           );
           onAlert(
             `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
@@ -473,6 +484,8 @@ export async function startMarketWatcher(
           side: pos?.side ?? null,
         };
 
+        debugger;
+
         // ВАЖНО: Добавляем await
         await tradeExecutor.closePosition(symbol, {
           price: snap.price,
@@ -486,6 +499,14 @@ export async function startMarketWatcher(
               (pos.side === 'LONG' ? 100 : -100)
             ).toFixed(2)
           : '0';
+
+        const entryTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+        const closeTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+
+        console.log(
+          `[TRADE] ⚪ EXIT ${pos?.side ?? 'UNKNOWN'} for ${symbol} | PnL: ${pnl}% | Reason: ${effectiveExitReason} | Price: ${snap.price}` +
+            ` | Opened: ${entryTimeStr} | Closed: ${closeTimeStr}`
+        );
 
         onAlert(
           `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +

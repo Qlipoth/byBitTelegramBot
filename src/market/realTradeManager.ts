@@ -3,7 +3,7 @@ import { calculatePositionSizing } from './paperPositionManager.js';
 import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
-import type { TradeExecutor, OpenPositionParams, TradePosition } from './tradeExecutor.js';
+import type { TradeExecutor, TradePosition } from './tradeExecutor.js';
 
 export interface ActivePosition {
   symbol: string;

@@ -168,7 +168,6 @@ export type ExitReason =
 
 export function shouldExitPosition({
   fsm,
-  signal,
   phase, // Добавляем фазу
   symbol,
   cvd3m,

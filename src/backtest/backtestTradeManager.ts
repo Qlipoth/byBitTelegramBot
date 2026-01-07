@@ -4,7 +4,6 @@ import type {
   TradePosition,
   OpenPositionParams,
   ClosePositionContext,
-  TradeSide,
 } from '../market/tradeExecutor.js';
 
 interface ClosedBacktestTrade extends TradePosition {

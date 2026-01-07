@@ -203,12 +203,12 @@ export const FUNDING_RATE_THRESHOLDS = {
 
 export const SYMBOL_BLACKLIST = ['FLOWUSDT', 'SQDUSDT', 'FARTCOINUSDT'] as const;
 
-export const COINS_COUNT = 10;
+export const COINS_COUNT = 1;
 
 export const STRUCTURE_WINDOW = 15;
 
 // These coins will always be included in the top liquid coins
-export const PRIORITY_COINS = ['BTCUSDT', 'ETHUSDT'] as const;
+export const PRIORITY_COINS = ['ETHUSDT'] as const;
 export const ALERT_COOLDOWN = 10 * 60 * 1000;
 export const CONFIRM_COOLDOWN = 2 * 60_000;
 export const LOG_PATH = '/tmp/bot.log';

@@ -1,25 +1,18 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { adaptiveBollingerStrategy } from '../market/adaptiveBollingerStrategy.js';
 import {
   ingestHistoricalCandle,
   type HistoricalCandleInput,
   candleState,
 } from '../market/candleBuilder.js';
-import { getSnapshots, saveSnapshot } from '../market/snapshotStore.js';
+import { saveSnapshot, setSnapshotPersistenceMode } from '../market/snapshotStore.js';
 import { BacktestTradeManager } from './backtestTradeManager.js';
 import { startMarketWatcher } from '../market/watcher.js';
 import { tradingState } from '../core/tradingState.js';
 import { buildSyntheticCvdSeries, getCvdDifference } from './cvdBuilder.js';
-import {
-  buildCachePath,
-  fetchBybitCandles,
-  fetchOpenInterestSeries,
-  fetchFundingRateSeries,
-  INTERVAL_TO_MS,
-  type OpenInterestPoint,
-  type FundingRatePoint,
-} from './candleLoader.js';
+import { buildCachePath, fetchBybitCandles, INTERVAL_TO_MS } from './candleLoader.js';
+import dayjs from 'dayjs';
+import type { MarketSnapshot } from '../market/types.js';
 
 interface BacktestRunParams {
   symbol: string;
@@ -78,79 +71,106 @@ function createVolumeTracker(windowMs: number) {
   };
 }
 
-async function runBotBacktest(params: BacktestRunParams) {
-  const candles = await loadHistoricalCandles(params);
-  if (!candles.length) {
-    throw new Error('No candles loaded for backtest');
+async function loadRecordedSnapshots(
+  symbol: string,
+  startTime: number,
+  endTime: number
+): Promise<MarketSnapshot[]> {
+  const filePath = path.resolve(process.cwd(), 'realSnaps.json');
+  const raw = await fs.readFile(filePath, 'utf-8');
+  const snapshots: MarketSnapshot[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as MarketSnapshot;
+      if (parsed.symbol !== symbol) continue;
+      if (parsed.timestamp < startTime || parsed.timestamp > endTime) continue;
+      snapshots.push(parsed);
+    } catch (err) {
+      console.warn('[BACKTEST] Failed to parse snapshot line:', err);
+    }
   }
+  snapshots.sort((a, b) => a.timestamp - b.timestamp);
+  if (!snapshots.length) {
+    throw new Error('No recorded snapshots found in realSnaps.json');
+  }
+  return snapshots;
+}
+
+function snapshotToCandle(
+  snap: MarketSnapshot,
+  prev: MarketSnapshot | undefined
+): HistoricalCandleInput {
+  const open = prev?.price ?? snap.price;
+  const high = Math.max(open, snap.price);
+  const low = Math.min(open, snap.price);
+  const volume24hDelta = prev ? Math.max(0, snap.volume24h - prev.volume24h) : 0;
+  return {
+    timestamp: snap.timestamp,
+    open,
+    high,
+    low,
+    close: snap.price,
+    volume: volume24hDelta,
+  };
+}
+
+function getRecordedCvdValue(snapshot: MarketSnapshot | undefined, minutes: number) {
+  if (!snapshot) return undefined;
+  const fieldMap: Record<number, keyof MarketSnapshot> = {
+    1: 'cvd1m',
+    3: 'cvd3m',
+    15: 'cvd15m',
+    30: 'cvd30m',
+  };
+  const field = fieldMap[minutes];
+  if (!field) return undefined;
+  const value = snapshot[field];
+  return typeof value === 'number' ? value : undefined;
+}
+
+async function runBotBacktest(params: BacktestRunParams) {
+  setSnapshotPersistenceMode('backtest');
+  const recordedSnapshots = await loadRecordedSnapshots(
+    params.symbol,
+    params.startTime,
+    params.endTime
+  );
+  const snapshotByTimestamp = new Map(recordedSnapshots.map(snap => [snap.timestamp, snap]));
+  const candles = recordedSnapshots.map((snap, idx) =>
+    snapshotToCandle(snap, recordedSnapshots[idx - 1])
+  );
   const cvdSeries = buildSyntheticCvdSeries(params.symbol, candles);
-
-  const [oiSeries, fundingSeries] = await Promise.all([
-    fetchOpenInterestSeries({
-      symbol: params.symbol,
-      start: params.startTime,
-      end: params.endTime,
-    }),
-    fetchFundingRateSeries({
-      symbol: params.symbol,
-      start: params.startTime,
-      end: params.endTime,
-    }),
-  ]);
-
-  const interval = params.interval ?? '5';
-  const intervalMs = INTERVAL_TO_MS[interval];
-  const volumeTracker = createVolumeTracker(24 * 60 * 60 * 1000);
-  const getOpenInterest = createSeriesStepper<OpenInterestPoint>(
-    oiSeries,
-    point => point.openInterest,
-    oiSeries[0]?.openInterest ?? 0
-  );
-  const getFundingRate = createSeriesStepper<FundingRatePoint>(
-    fundingSeries,
-    point => point.fundingRate,
-    fundingSeries[0]?.fundingRate ?? 0
-  );
 
   const tradeExecutor = new BacktestTradeManager({ initialBalance: 10_000 });
   await tradeExecutor.bootstrap([params.symbol]);
 
   // Warm up candle builder history
   candleState[params.symbol] = undefined as any;
-  for (const candle of candles.slice(0, 50)) {
-    ingestHistoricalCandle(params.symbol, candle);
-    const volume24h = volumeTracker(candle.timestamp, candle.volume);
-    saveSnapshot({
-      symbol: params.symbol,
-      price: candle.close,
-      volume24h,
-      openInterest: getOpenInterest(candle.timestamp),
-      fundingRate: getFundingRate(candle.timestamp),
-      timestamp: candle.timestamp,
-    });
+  const warmupCount = Math.min(50, recordedSnapshots.length);
+  for (let i = 0; i < warmupCount; i++) {
+    ingestHistoricalCandle(params.symbol, candles[i]!);
+    saveSnapshot(recordedSnapshots[i]!);
   }
 
   // Replay using watcher
-  let cursor = 50;
+  let cursor = warmupCount;
   tradingState.enable();
   await startMarketWatcher(params.symbol, console.log, {
     tradeExecutor,
     snapshotProvider: async () => {
-      if (cursor >= candles.length) return null;
-      const candle = candles[cursor++]!;
-      ingestHistoricalCandle(params.symbol, candle);
-      const volume24h = volumeTracker(candle.timestamp, candle.volume);
-      return {
-        symbol: params.symbol,
-        price: candle.close,
-        volume24h,
-        openInterest: getOpenInterest(candle.timestamp),
-        fundingRate: getFundingRate(candle.timestamp),
-        timestamp: candle.timestamp,
-      };
+      if (cursor >= recordedSnapshots.length) return null;
+      const snap = recordedSnapshots[cursor]!;
+      ingestHistoricalCandle(params.symbol, candles[cursor]!);
+      cursor++;
+      return snap;
     },
     balanceProvider: async () => tradeExecutor.getBalance(),
     cvdProvider: (_symbol, minutes, referenceTs) => {
+      const recordedValue = getRecordedCvdValue(snapshotByTimestamp.get(referenceTs), minutes);
+      if (typeof recordedValue === 'number') {
+        return recordedValue;
+      }
       const windowMs = minutes * 60_000;
       const fromTs = referenceTs - windowMs;
       return getCvdDifference(cvdSeries, fromTs, referenceTs);
@@ -170,9 +190,11 @@ async function runBotBacktest(params: BacktestRunParams) {
   console.log(`Max Drawdown: ${stats.maxDrawdown.toFixed(2)} USD`);
 }
 
-const [, , startArg, endArg, symbol = 'PIPPINUSDT', intervalArg] = process.argv;
-const endTime = endArg ? Date.parse(endArg) : Date.now();
-const startTime = startArg ? Date.parse(startArg) : endTime - 60 * 24 * 60 * 60 * 1000;
+const [, , startArg, endArg, symbol = 'ETHUSDT', intervalArg] = process.argv;
+const endTime = dayjs(1767801677110).valueOf();
+
+const diffMs = dayjs(endTime).diff(dayjs(1767792660000));
+const startTime = endTime - diffMs;
 const interval = '1';
 
 runBotBacktest({ symbol, startTime, endTime, interval })

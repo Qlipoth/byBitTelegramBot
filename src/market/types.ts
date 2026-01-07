@@ -7,6 +7,10 @@ export interface MarketSnapshot {
   openInterest: number;
   fundingRate: number;
   timestamp: number;
+  cvd1m?: number;
+  cvd3m?: number;
+  cvd15m?: number;
+  cvd30m?: number;
 }
 
 export interface MarketDelta {

@@ -8,11 +8,6 @@ function safePctChange(current: number, previous: number): number {
   return Number.isFinite(pct) ? pct : 0;
 }
 
-function safeDiff(current: number, previous: number): number {
-  const diff = (current ?? 0) - (previous ?? 0);
-  return Number.isFinite(diff) ? diff : 0;
-}
-
 export function compareSnapshots(now: MarketSnapshot, prev: MarketSnapshot): MarketDelta {
   return {
     priceChangePct: safePctChange(now.price, prev.price), // На сколько процентов изменилась цена между двумя моментами времени
