@@ -1,10 +1,23 @@
 import type { MarketDelta, MarketSnapshot } from './types.js';
 
+function safePctChange(current: number, previous: number): number {
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || previous === 0) {
+    return 0;
+  }
+  const pct = ((current - previous) / previous) * 100;
+  return Number.isFinite(pct) ? pct : 0;
+}
+
+function safeDiff(current: number, previous: number): number {
+  const diff = (current ?? 0) - (previous ?? 0);
+  return Number.isFinite(diff) ? diff : 0;
+}
+
 export function compareSnapshots(now: MarketSnapshot, prev: MarketSnapshot): MarketDelta {
   return {
-    priceChangePct: ((now.price - prev.price) / prev.price) * 100, // На сколько процентов изменилась цена между двумя моментами времени
-    oiChangePct: ((now.openInterest - prev.openInterest) / prev.openInterest) * 100, //На сколько процентов изменился открытый интерес (OI)
-    fundingChange: now.fundingRate - prev.fundingRate, // Как изменился фандинг между снапшотами
+    priceChangePct: safePctChange(now.price, prev.price), // На сколько процентов изменилась цена между двумя моментами времени
+    oiChangePct: safePctChange(now.openInterest, prev.openInterest), //На сколько процентов изменился открытый интерес (OI)
+    fundingChange: now.fundingRate - (prev.fundingRate || 0), // Как изменился фандинг между снапшотами
     minutesAgo: Math.round((now.timestamp - prev.timestamp) / 60000), // Сколько минут прошло между снапшотами
   };
 }

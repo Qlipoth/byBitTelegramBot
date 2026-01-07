@@ -22,7 +22,7 @@ const ENTRY_FEE_PCT = 0.0006;
 const EXIT_FEE_PCT = 0.0006;
 const TOTAL_FEE_PCT = ENTRY_FEE_PCT + EXIT_FEE_PCT;
 
-const MAX_STOP_PCT = 0.025; // 2.5%
+const MAX_STOP_PCT = 0.07; // allow wider stops for volatile coins
 const MIN_POSITION_USD = 20;
 
 const LEVERAGE = 10;

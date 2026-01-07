@@ -11,10 +11,12 @@ export function detectTrend(deltaBase: {
     : TREND_THRESHOLDS;
 
   if (deltaBase.priceChangePct > PRICE_CHANGE && deltaBase.oiChangePct > OI_CHANGE) {
+    debugger;
     return { label: '📈 Бычий тренд', isBull: true, isBear: false };
   }
 
   if (deltaBase.priceChangePct < -PRICE_CHANGE && deltaBase.oiChangePct > OI_CHANGE) {
+    debugger;
     return { label: '📉 Медвежий тренд', isBull: false, isBear: true };
   }
 

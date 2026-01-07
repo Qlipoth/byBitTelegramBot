@@ -3,6 +3,7 @@ import { calculatePositionSizing } from './paperPositionManager.js';
 import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
+import type { TradeExecutor, OpenPositionParams, TradePosition } from './tradeExecutor.js';
 
 export interface ActivePosition {
   symbol: string;
@@ -25,7 +26,7 @@ interface PendingOrder {
   createdAt: number;
 }
 
-export class RealTradeManager {
+export class RealTradeManager implements TradeExecutor {
   private readonly activePositions = new Map<string, ActivePosition>();
   private readonly pendingOrders = new Map<string, PendingOrder>();
 
@@ -46,7 +47,7 @@ export class RealTradeManager {
     return this.hasPosition(symbol) || this.hasPending(symbol);
   }
 
-  getPosition(symbol: string) {
+  getPosition(symbol: string): TradePosition | undefined {
     return this.activePositions.get(symbol);
   }
 

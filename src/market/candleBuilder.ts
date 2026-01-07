@@ -24,8 +24,8 @@ export const candleState: CandleState = {};
 // Константы для адаптивной настройки
 const CONFIG = {
   MIN_ATR_PCT: 0.15,
-  MIN_MOVE_THRESHOLD: 0.25,
-  MIN_CVD_THRESHOLD: 500,
+  MIN_MOVE_THRESHOLD: 0.15,
+  MIN_CVD_THRESHOLD: 300,
   HISTORY_LIMIT: 500,
   VOLUME_AVG_PERIOD: 30, // Считаем средний объем за 30 минут
 } as const;
@@ -87,12 +87,12 @@ export function getCvdThreshold(symbol: string) {
   const price = state.current.close;
   const atrPct = (state.atr / price) * 100;
 
-  // Порог движения: минимум 0.25%, или 1.5 от текущей волатильности
-  const moveThreshold = Math.max(atrPct * 1.5, CONFIG.MIN_MOVE_THRESHOLD);
+  // Порог движения: минимум 0.15%, или 1.2 от текущей волатильности
+  const moveThreshold = Math.max(atrPct * 1.2, CONFIG.MIN_MOVE_THRESHOLD);
 
-  // Порог CVD: берем средний объем за 30 мин и требуем всплеск в 1.8 раза
+  // Порог CVD: берем средний объем за 30 мин и требуем всплеск в 1.3 раза
   // Это делает порог индивидуальным для каждой монеты автоматически
-  const cvdThreshold = Math.max(state.avgVolume * 1.8, CONFIG.MIN_CVD_THRESHOLD);
+  const cvdThreshold = Math.max(state.avgVolume * 1.3, CONFIG.MIN_CVD_THRESHOLD);
 
   return {
     moveThreshold: Number(moveThreshold.toFixed(3)),

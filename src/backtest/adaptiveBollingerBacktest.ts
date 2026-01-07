@@ -1,5 +1,3 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { adaptiveBollingerStrategy } from '../market/adaptiveBollingerStrategy.js';
 import {
@@ -7,27 +5,15 @@ import {
   type HistoricalCandleInput,
   getATR,
 } from '../market/candleBuilder.js';
+import {
+  buildCachePath,
+  fetchBybitCandles,
+  readCandlesCache,
+  INTERVAL_TO_MS,
+  writeCandlesCache,
+} from './candleLoader.js';
 
 type TradeSide = 'LONG' | 'SHORT';
-
-const fetchFn: typeof fetch =
-  globalThis.fetch ??
-  (() => {
-    throw new Error('Global fetch API недоступен в этой версии Node.js');
-  });
-
-const INTERVAL_TO_MS: Record<string, number> = {
-  '1': 60_000,
-};
-
-interface FetchCandlesParams {
-  symbol: string;
-  start: number;
-  end: number;
-  interval?: keyof typeof INTERVAL_TO_MS;
-  category?: 'linear' | 'inverse' | 'option' | 'spot';
-  limit?: number;
-}
 
 interface OpenTrade {
   side: TradeSide;
@@ -64,44 +50,9 @@ interface TradeDiagnostic {
 
 const DEFAULT_SYMBOL = 'ETHUSDT';
 const STOP_ATR_MULT = 1.5;
-const TAKE_ATR_MULT = 3;
+const TAKE_ATR_MULT = 3.0;
 const RISK_PER_TRADE = 0.01; // 1% от баланса
 const START_BALANCE = 10_000;
-const CACHE_DIR = path.resolve(process.cwd(), 'cache', 'bybit');
-
-function buildCachePath(
-  symbol: string,
-  start: number,
-  end: number,
-  interval: keyof typeof INTERVAL_TO_MS
-): string {
-  const safeSymbol = symbol.replace(/[^a-z0-9]/gi, '_').toUpperCase();
-  return path.join(CACHE_DIR, `${safeSymbol}_${start}_${end}_${interval}.json`);
-}
-
-async function readCandlesCache(cachePath: string): Promise<HistoricalCandleInput[] | null> {
-  try {
-    const raw = await fs.readFile(cachePath, 'utf-8');
-    const parsed = JSON.parse(raw) as HistoricalCandleInput[];
-    if (Array.isArray(parsed) && parsed.length) {
-      return parsed;
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.warn(`[CACHE] Не удалось прочитать ${cachePath}:`, err);
-    }
-  }
-  return null;
-}
-
-async function writeCandlesCache(
-  cachePath: string,
-  candles: HistoricalCandleInput[]
-): Promise<void> {
-  await fs.mkdir(path.dirname(cachePath), { recursive: true });
-  await fs.writeFile(cachePath, JSON.stringify(candles));
-}
-
 function annotateExit(diagnostics: TradeDiagnostic[], trade: OpenTrade, closed: ClosedTrade): void {
   const diag = diagnostics[trade.statIndex];
   if (!diag) return;
@@ -164,91 +115,25 @@ function closeTrade(
   };
 }
 
-async function fetchBybitCandles(params: FetchCandlesParams): Promise<HistoricalCandleInput[]> {
-  const { symbol, start, end, interval = '1', category = 'linear', limit = 1000 } = params;
-  const step = INTERVAL_TO_MS[interval];
-  if (!step) throw new Error(`Неизвестный интервал ${interval}`);
-
-  let currentStart = start;
-  const allCandles: HistoricalCandleInput[] = [];
-
-  console.log(`[LOADER] Начинаю загрузку с ${new Date(start).toISOString()}`);
-
-  while (currentStart < end) {
-    const url = new URL('https://api.bybit.com/v5/market/kline');
-    url.searchParams.set('category', category);
-    url.searchParams.set('symbol', symbol);
-    url.searchParams.set('interval', interval);
-    url.searchParams.set('start', String(currentStart));
-    // url.searchParams.set('end', String(end)); // Убираем, чтобы лимит работал корректно от start
-    url.searchParams.set('limit', String(limit));
-
-    const response = await fetchFn(url);
-    const payload = (await response.json()) as any;
-
-    if (payload.retCode !== 0 || !payload.result?.list?.length) {
-      console.log(`[LOADER] Данные закончились или ошибка: ${payload.retMsg}`);
-      break;
-    }
-
-    // Bybit V5: [0] - самая новая, [n] - самая старая.
-    // Преобразуем и разворачиваем, чтобы в конце была самая свежая свеча.
-    const batch: HistoricalCandleInput[] = payload.result.list
-      .map((row: string[]) => ({
-        timestamp: Number(row[0]),
-        open: Number(row[1]),
-        high: Number(row[2]),
-        low: Number(row[3]),
-        close: Number(row[4]),
-        volume: Number(row[5]),
-      }))
-      .reverse();
-
-    allCandles.push(...batch);
-
-    // Берем время последней полученной свечи и делаем шаг вперед
-    const lastTimestamp = batch[batch.length - 1]?.timestamp;
-
-    if (!lastTimestamp) {
-      throw new Error('Не получен', ('' + lastTimestamp) as any);
-    }
-    // Если мы не сдвинулись (API вернул то же самое), выходим, чтобы не зациклиться
-    if (lastTimestamp <= currentStart) {
-      break;
-    }
-
-    currentStart = lastTimestamp + step;
-
-    console.log(
-      `[LOADER] Загружено ${allCandles.length} свечей. Последняя дата: ${new Date(lastTimestamp).toISOString()}`
-    );
-
-    if (batch.length < limit) break;
-    if (currentStart >= end) break;
-
-    await new Promise(resolve => setTimeout(resolve, 150));
-  }
-
-  // Финальная фильтрация, чтобы не вылезти за end
-  const finalCandles = allCandles.filter(c => c.timestamp >= start && c.timestamp <= end);
-
-  // Удаляем дубликаты по timestamp (на всякий случай)
-  const uniqueCandles = Array.from(new Map(finalCandles.map(c => [c.timestamp, c])).values());
-
-  return uniqueCandles.sort((a, b) => a.timestamp - b.timestamp);
-}
-
-async function runBacktest(candles: HistoricalCandleInput[], symbol: string = DEFAULT_SYMBOL) {
+async function runBacktest(
+  candles: HistoricalCandleInput[],
+  symbol: string = DEFAULT_SYMBOL,
+  interval: keyof typeof INTERVAL_TO_MS = '5'
+) {
   if (!candles.length) {
     throw new Error('❌ Нет исторических данных для бэктеста');
   }
 
+  const expectedStep = INTERVAL_TO_MS[interval];
+  if (!expectedStep) {
+    throw new Error(`❌ Неизвестный интервал ${interval}`);
+  }
+
   let gaps = 0;
-  const EXPECTED_STEP = 60_000; // 1 минута в мс
 
   for (let i = 1; i < candles.length; i++) {
     const diff = candles[i]!.timestamp - candles[i - 1]!.timestamp;
-    if (diff !== EXPECTED_STEP) {
+    if (diff !== expectedStep) {
       gaps++;
       console.log(
         `Разрыв в данных: ${new Date(candles[i - 1]!.timestamp).toISOString()} -> ${diff / 1000}сек`
@@ -256,7 +141,7 @@ async function runBacktest(candles: HistoricalCandleInput[], symbol: string = DE
     }
   }
 
-  console.log(`Обнаружено разрывов (пропусков минут): ${gaps}`);
+  console.log(`Обнаружено разрывов (пропусков интервала ${interval}m): ${gaps}`);
 
   const uniqueTimestamps = new Set(candles.map(c => c.timestamp));
 
@@ -348,7 +233,7 @@ async function runBacktest(candles: HistoricalCandleInput[], symbol: string = DE
         entryTime: candle.timestamp,
         entryPrice,
         atr,
-        rsi: contextSnapshot?.rsi ?? 0,
+        rsi: contextSnapshot?.rsiLong ?? 0,
         distanceToMiddle,
         trendBias,
         stopDistance,
@@ -444,7 +329,7 @@ async function runBacktestFromApi(params: {
   endTime: number;
   interval?: keyof typeof INTERVAL_TO_MS;
 }) {
-  const { symbol, startTime, endTime, interval = '1' } = params;
+  const { symbol, startTime, endTime, interval = '5' } = params;
   const cachePath = buildCachePath(symbol, startTime, endTime, interval);
 
   let candles = await readCandlesCache(cachePath);
@@ -471,28 +356,32 @@ async function runBacktestFromApi(params: {
   }
 
   console.log(`📈 Получено ${candles.length} свечей. Запускаю бэктест...`);
-  await runBacktest(candles, symbol);
+  await runBacktest(candles, symbol, interval);
 }
 
 const isExecutedDirectly =
   process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (isExecutedDirectly) {
-  const [, , startArg, endArg, symbol = DEFAULT_SYMBOL] = process.argv;
+  const [, , startArg, endArg, symbol = DEFAULT_SYMBOL, intervalArg] = process.argv;
   const endTime = endArg ? Date.parse(endArg) : Date.now();
-  const startTime = startArg ? Date.parse(startArg) : endTime - 30 * 24 * 60 * 60 * 1000;
+  const startTime = startArg ? Date.parse(startArg) : endTime - 120 * 24 * 60 * 60 * 1000;
+  const interval =
+    intervalArg && intervalArg in INTERVAL_TO_MS
+      ? (intervalArg as keyof typeof INTERVAL_TO_MS)
+      : '5';
 
   if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
     console.error(
-      'Usage: pnpm ts-node src/backtest/adaptiveBollingerBacktest.ts [START_ISO] [END_ISO] [SYMBOL]'
+      'Usage: pnpm ts-node src/backtest/adaptiveBollingerBacktest.ts [START_ISO] [END_ISO] [SYMBOL] [INTERVAL]'
     );
     console.error(
-      'Пример: pnpm ts-node src/backtest/adaptiveBollingerBacktest.ts 2024-01-01T00:00:00Z 2024-01-05T00:00:00Z ETHUSDT'
+      'Пример: pnpm ts-node src/backtest/adaptiveBollingerBacktest.ts 2024-01-01T00:00:00Z 2024-01-05T00:00:00Z ETHUSDT 5'
     );
     process.exit(1);
   }
 
-  runBacktestFromApi({ symbol, startTime, endTime })
+  runBacktestFromApi({ symbol, startTime, endTime, interval })
     .then(() => process.exit(0))
     .catch(err => {
       console.error('❌ Backtest failed:', err);

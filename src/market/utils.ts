@@ -161,21 +161,21 @@ export function getSignalAgreement({
   const csi = getCSI(symbol); // Получаем индекс силы
 
   // 1. Для пробоев и накопления нам нужен ИМПУЛЬС (CSI выше 0.25)
-  if ((phase === 'accumulation' || phase === 'distribution') && Math.abs(csi) < 0.25) {
-    console.log(`[SIGNAL_AGREEMENT] CSI ${csi.toFixed(2)} too low for BREAKOUT`);
-    return 'NONE';
-  }
-
-  // 2. Для тренда достаточно, чтобы CSI просто не был направлен ПРОТИВ нас
-  if (phase === 'trend') {
-    if (longScore > shortScore && csi < -0.1) return 'NONE'; // Пытаемся лонговать, а минутка давит вниз
-    if (shortScore > longScore && csi > 0.1) return 'NONE'; // Пытаемся шортить, а минутка откупается
-  }
-
-  // 3. Абсолютный мусор (дойджи, отсутствие объема) — режем всегда
-  if (Math.abs(csi) < 0.1) {
-    return 'NONE';
-  }
+  // if ((phase === 'accumulation' || phase === 'distribution') && Math.abs(csi) < 0.25) {
+  //   console.log(`[SIGNAL_AGREEMENT] CSI ${csi.toFixed(2)} too low for BREAKOUT`);
+  //   return 'NONE';
+  // }
+  //
+  // // 2. Для тренда достаточно, чтобы CSI просто не был направлен ПРОТИВ нас
+  // if (phase === 'trend') {
+  //   if (longScore > shortScore && csi < -0.1) return 'NONE'; // Пытаемся лонговать, а минутка давит вниз
+  //   if (shortScore > longScore && csi > 0.1) return 'NONE'; // Пытаемся шортить, а минутка откупается
+  // }
+  //
+  // // 3. Абсолютный мусор (дойджи, отсутствие объема) — режем всегда
+  // if (Math.abs(csi) < 0.1) {
+  //   return 'NONE';
+  // }
   // 1️⃣ Блокировка при кульминации
   if (phase === 'blowoff') {
     console.log(`[SIGNAL_AGREEMENT] Blowoff phase detected, returning NONE`);
@@ -188,7 +188,7 @@ export function getSignalAgreement({
   if (phase === 'trend') {
     // LONG continuation
     if (
-      longScore >= 55 &&
+      longScore >= MIN_SCORE &&
       longScore - shortScore >= 7 &&
       rsi >= 50 &&
       pricePercentChange > 0 &&
@@ -202,7 +202,7 @@ export function getSignalAgreement({
 
     // SHORT continuation
     if (
-      shortScore >= 55 &&
+      shortScore >= MIN_SCORE &&
       shortScore - longScore >= 7 &&
       rsi <= 50 &&
       pricePercentChange < 0 &&

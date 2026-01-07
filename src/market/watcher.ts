@@ -24,12 +24,13 @@ import {
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
 import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
-import type { MarketState, SymbolValue } from './types.js';
+import type { MarketSnapshot, MarketState, SymbolValue } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
 import { getCvdThreshold } from './candleBuilder.js';
 import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
 import { realTradeManager } from './realTradeManager.js';
+import type { TradeExecutor } from './tradeExecutor.js';
 import { tradingState } from '../core/tradingState.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
@@ -38,54 +39,98 @@ const stateBySymbol = new Map<string, MarketState>();
 // symbol -> FSM instance
 const tradeFSMBySymbol = new Map<string, ReturnType<typeof createFSM>>();
 
+interface WatcherOptions {
+  tradeExecutor?: TradeExecutor;
+  snapshotProvider?: (symbol: string) => Promise<MarketSnapshot | null>;
+  balanceProvider?: () => Promise<number>;
+  intervalMs?: number;
+  enableRealtime?: boolean;
+  warmupSnapshots?: MarketSnapshot[];
+  onComplete?: () => void;
+  entryMode?: 'adaptive' | 'classic';
+  cvdProvider?: (symbol: string, minutes: number, referenceTs: number) => number;
+}
+
 // =====================
 // Initialize watchers
 // =====================
-export async function initializeMarketWatcher(onAlert: (msg: string) => void) {
+export async function initializeMarketWatcher(
+  onAlert: (msg: string) => void,
+  options: WatcherOptions = {}
+) {
   await ensureLiquidThresholdsCalibrated();
   const symbols = await getTopLiquidSymbols(COINS_COUNT);
   console.log(`🔄 Tracking ${symbols.length} symbols`);
 
+  const tradeExecutor = options.tradeExecutor ?? realTradeManager;
   try {
-    await realTradeManager.bootstrap(symbols);
+    await tradeExecutor.bootstrap(symbols);
   } catch (e) {
-    console.error('[WATCHER] realTradeManager.bootstrap failed:', e);
+    console.error('[WATCHER] tradeExecutor.bootstrap failed:', e);
   }
 
-  const intervals = symbols.map(symbol => startMarketWatcher(symbol, msg => onAlert(msg)));
-  ws.subscribeV5(
-    symbols.map(s => `publicTrade.${s}`),
-    'linear'
+  const handles = await Promise.all(
+    symbols.map(symbol =>
+      startMarketWatcher(symbol, msg => onAlert(msg), { ...options, tradeExecutor })
+    )
   );
 
-  return () => intervals.forEach(clearInterval as any);
+  if (options.enableRealtime ?? true) {
+    ws.subscribeV5(
+      symbols.map(s => `publicTrade.${s}`),
+      'linear'
+    );
+  }
+
+  return () =>
+    handles.forEach(handle => {
+      if (handle) clearInterval(handle);
+    });
 }
 
 // =====================
 // Single symbol watcher
 // =====================
-export async function startMarketWatcher(symbol: string, onAlert: (msg: string) => void) {
-  const INTERVAL = INTERVALS.ONE_MIN;
+export async function startMarketWatcher(
+  symbol: string,
+  onAlert: (msg: string) => void,
+  options: WatcherOptions = {}
+) {
+  const tradeExecutor = options.tradeExecutor ?? realTradeManager;
+  const balanceProvider = options.balanceProvider ?? getCurrentBalance;
+  const fetchSnapshot = options.snapshotProvider ?? (async (s: string) => getMarketSnapshot(s));
+  const customCvdProvider = options.cvdProvider;
+  const INTERVAL = options.intervalMs ?? INTERVALS.ONE_MIN;
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
+  const entryMode = options.entryMode ?? 'adaptive';
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
-  const snapshots = await preloadMarketSnapshots(symbol);
+  const snapshots = options.warmupSnapshots ?? (await preloadMarketSnapshots(symbol));
 
   for (const snap of snapshots) {
     saveSnapshot(snap); // ТВОЯ существующая функция
   }
 
-  return setInterval(async () => {
+  let intervalId: NodeJS.Timeout | null = null;
+  const tick = async () => {
     try {
       const logData: Record<string, any> = {};
-      const cvd1m = getCVDLastMinutes(symbol, 1);
-      const cvd3m = getCVDLastMinutes(symbol, 3);
-      const cvd15m = getCVDLastMinutes(symbol, 15);
-      const cvd30m = getCVDLastMinutes(symbol, 30);
-      const snap = await getMarketSnapshot(symbol);
+      const snap = await fetchSnapshot(symbol);
+      if (!snap) {
+        return false;
+      }
       const now = Date.now();
       saveSnapshot(snap);
+      const referenceTs = snap.timestamp;
+      const cvdLookup = (minutes: number) =>
+        customCvdProvider
+          ? customCvdProvider(symbol, minutes, referenceTs)
+          : getCVDLastMinutes(symbol, minutes);
+      const cvd1m = cvdLookup(1);
+      const cvd3m = cvdLookup(3);
+      const cvd15m = cvdLookup(15);
+      const cvd30m = cvdLookup(30);
       logData.cvd = {
         cvd1m,
         cvd3m,
@@ -105,7 +150,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       }
       const fsm = tradeFSMBySymbol.get(symbol)!;
 
-      const restoredPos = realTradeManager.getPosition(symbol);
+      const restoredPos = tradeExecutor.getPosition(symbol);
       if (restoredPos && fsm.state !== 'OPEN') {
         fsm.state = 'OPEN';
         fsm.side = restoredPos.side;
@@ -114,7 +159,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       }
 
       const snaps = getSnapshots(symbol);
-      if (snaps.length < 15) return;
+      if (snaps.length < 15) return true;
 
       // 1m импульс — сравнение с предыдущим снапом
       const prev = snaps[snaps.length - 2];
@@ -165,7 +210,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // Для сигнальной логики надёжнее использовать изменения цены по снапшотам.
       const pricePercentChange = delta15m.priceChangePct;
       const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
-      const habrMode = adaptiveBollingerStrategy.isSupported(symbol);
+      const habrMode = entryMode === 'adaptive' && adaptiveBollingerStrategy.isSupported(symbol);
 
       state.phase = has30m
         ? detectMarketPhase({
@@ -193,14 +238,12 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       let shortScore = 0;
       let details: Record<string, unknown> | undefined;
       let signal = 'NONE';
-      let impulseForClassic:
-        | {
-            PRICE_SURGE_PCT: number;
-            VOL_SURGE_CVD: number;
-            OI_INCREASE_PCT: number;
-            OI_SURGE_PCT: number;
-          }
-        | null = null;
+      let impulseForClassic: {
+        PRICE_SURGE_PCT: number;
+        VOL_SURGE_CVD: number;
+        OI_INCREASE_PCT: number;
+        OI_SURGE_PCT: number;
+      } | null = null;
 
       if (habrMode) {
         const adaptive = adaptiveBollingerStrategy.getSignal(symbol);
@@ -278,7 +321,10 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
 
       // Legacy confirmation check for backward compatibility
       if (habrMode) {
-        confirmed = adaptiveBollingerStrategy.confirmEntry(symbol, signal as 'LONG' | 'SHORT' | 'NONE');
+        confirmed = adaptiveBollingerStrategy.confirmEntry(
+          symbol,
+          signal as 'LONG' | 'SHORT' | 'NONE'
+        );
       } else if (signal === 'LONG' || signal === 'SHORT') {
         confirmed = confirmEntry({
           signal,
@@ -290,19 +336,19 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         console.log('2) confirmed value:', confirmed);
       }
 
-      const hadPending = realTradeManager.hasPending(symbol);
+      const hadPending = tradeExecutor.hasPending(symbol);
       if (hadPending) {
         try {
-          await realTradeManager.syncSymbol(symbol);
+          await tradeExecutor.syncSymbol(symbol);
         } catch (e) {
           console.error(`[WATCHER] syncSymbol failed (${symbol}):`, e);
         }
       }
 
-      const hasOpen = realTradeManager.hasPosition(symbol);
-      const hasExposure = realTradeManager.hasExposure(symbol);
+      const hasOpen = tradeExecutor.hasPosition(symbol);
+      const hasExposure = tradeExecutor.hasExposure(symbol);
 
-      const currentPos = realTradeManager.getPosition(symbol);
+      const currentPos = tradeExecutor.getPosition(symbol);
 
       console.log('3) currentPos:', JSON.stringify(currentPos));
 
@@ -377,9 +423,9 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
           return;
         }
 
-        const balance = await getCurrentBalance();
+        const balance = await balanceProvider();
 
-        const success = await realTradeManager.openPosition({
+        const success = await tradeExecutor.openPosition({
           symbol,
           side: fsm.side!,
           price: snap.price,
@@ -411,7 +457,7 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
       // 3. ВЫХОД ИЗ ПОЗИЦИИ (EXIT_MARKET)
       // ВЫХОД ИЗ ПОЗИЦИИ
       if (action === 'EXIT_MARKET' && hasOpen) {
-        const pos = realTradeManager.getPosition(symbol);
+        const pos = tradeExecutor.getPosition(symbol);
 
         const effectiveExitReason = exitSignal ? exitReason : 'MAX_POSITION_DURATION';
 
@@ -428,7 +474,11 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         };
 
         // ВАЖНО: Добавляем await
-        await realTradeManager.closePosition(symbol);
+        await tradeExecutor.closePosition(symbol, {
+          price: snap.price,
+          now,
+          reason: effectiveExitReason,
+        });
 
         const pnl = pos
           ? (
@@ -451,8 +501,35 @@ export async function startMarketWatcher(symbol: string, onAlert: (msg: string) 
         // Можно не слать алерты на каждое затишье, чтобы не спамить в Telegram
       }
       console.log('==============================================');
+      return true;
     } catch (err) {
       console.error(`❌ Market watcher error (${symbol}):`, err);
+      return false;
+    }
+  };
+
+  const isRealtime = options.enableRealtime ?? true;
+
+  if (!isRealtime) {
+    while (await tick()) {
+      // continue until snapshots exhausted
+    }
+    options.onComplete?.();
+    return null;
+  }
+
+  const first = await tick();
+  if (!first) {
+    options.onComplete?.();
+    return null;
+  }
+
+  intervalId = setInterval(async () => {
+    const ok = await tick();
+    if (!ok && intervalId) {
+      clearInterval(intervalId);
+      options.onComplete?.();
     }
   }, INTERVAL);
+  return intervalId;
 }
