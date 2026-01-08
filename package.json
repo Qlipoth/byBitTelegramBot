@@ -13,7 +13,10 @@
     "build": "node build.js",
     "build:prod": "NODE_ENV=production node build.js",
     "backtest:adaptive": "node --loader ts-node/esm src/backtest/adaptiveBollingerBacktest.ts",
-    "backtest:bot": "node --loader ts-node/esm src/backtest/botBacktester.ts"
+    "backtest:bot": "node --loader ts-node/esm src/backtest/botBacktester.ts",
+    "backtest:BTC": "node --loader ts-node/esm src/backtest/botBacktester.ts BTC",
+    "backtest:ETH": "node --loader ts-node/esm src/backtest/botBacktester.ts ETH",
+    "backtest:SOL": "node --loader ts-node/esm src/backtest/botBacktester.ts SOL"
   },
   "keywords": ["bybit", "trading", "bot", "telegram", "crypto"],
   "author": "Qlipoth",

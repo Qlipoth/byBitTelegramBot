@@ -5,7 +5,11 @@ import {
   type HistoricalCandleInput,
   candleState,
 } from '../market/candleBuilder.js';
-import { saveSnapshot, setSnapshotPersistenceMode } from '../market/snapshotStore.js';
+import {
+  saveSnapshot,
+  setSnapshotPersistenceMode,
+  SYMBOL_HISTORY_FILES,
+} from '../market/snapshotStore.js';
 import { BacktestTradeManager } from './backtestTradeManager.js';
 import { startMarketWatcher } from '../market/watcher.js';
 import { tradingState } from '../core/tradingState.js';
@@ -26,6 +30,7 @@ interface BacktestRunParams {
   startTime: number;
   endTime: number;
   interval?: '1' | '3' | '5' | '15';
+  snapshotFilePath: string;
 }
 
 async function loadHistoricalCandles(params: BacktestRunParams): Promise<HistoricalCandleInput[]> {
@@ -78,7 +83,20 @@ function createVolumeTracker(windowMs: number) {
   };
 }
 
-const SNAPSHOT_FILE_PATH = path.resolve(process.cwd(), 'realSnaps.json');
+const FALLBACK_SNAPSHOT_FILE_PATH = path.resolve(process.cwd(), 'realSnaps.json');
+const HISTORY_SYMBOL_SET = new Set(Object.keys(SYMBOL_HISTORY_FILES));
+
+function normalizeSymbolInput(rawSymbol: string | undefined) {
+  const upper = (rawSymbol ?? 'DOGEUSDT').toUpperCase();
+  return upper.endsWith('USDT') ? upper : `${upper}USDT`;
+}
+
+function resolveSnapshotFilePath(symbol: string) {
+  if (HISTORY_SYMBOL_SET.has(symbol)) {
+    return SYMBOL_HISTORY_FILES[symbol as keyof typeof SYMBOL_HISTORY_FILES];
+  }
+  return FALLBACK_SNAPSHOT_FILE_PATH;
+}
 
 function isPrioritySymbol(symbol: string) {
   return PRIORITY_COINS.includes(symbol as any);
@@ -110,9 +128,10 @@ function ensureSnapshotThresholds(symbol: string, snap: MarketSnapshot): MarketS
 async function loadRecordedSnapshots(
   symbol: string,
   startTime: number,
-  endTime: number
+  endTime: number,
+  snapshotFilePath: string
 ): Promise<MarketSnapshot[]> {
-  const raw = await fs.readFile(SNAPSHOT_FILE_PATH, 'utf-8');
+  const raw = await fs.readFile(snapshotFilePath, 'utf-8');
   const snapshots: MarketSnapshot[] = [];
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -127,13 +146,16 @@ async function loadRecordedSnapshots(
   }
   snapshots.sort((a, b) => a.timestamp - b.timestamp);
   if (!snapshots.length) {
-    throw new Error('No recorded snapshots found in realSnaps.json');
+    throw new Error(`No recorded snapshots found in ${snapshotFilePath}`);
   }
   return snapshots;
 }
 
-async function getSnapshotRange(symbol: string): Promise<{ start: number; end: number }> {
-  const raw = await fs.readFile(SNAPSHOT_FILE_PATH, 'utf-8');
+async function getSnapshotRange(
+  symbol: string,
+  snapshotFilePath: string
+): Promise<{ start: number; end: number }> {
+  const raw = await fs.readFile(snapshotFilePath, 'utf-8');
   let start: number | null = null;
   let end: number | null = null;
   for (const line of raw.split(/\r?\n/)) {
@@ -150,7 +172,7 @@ async function getSnapshotRange(symbol: string): Promise<{ start: number; end: n
   }
 
   if (start === null || end === null) {
-    throw new Error(`No snapshots found in realSnaps.json for symbol ${symbol}`);
+    throw new Error(`No snapshots found in ${snapshotFilePath} for symbol ${symbol}`);
   }
 
   return { start, end };
@@ -193,7 +215,8 @@ async function runBotBacktest(params: BacktestRunParams) {
   const recordedSnapshots = await loadRecordedSnapshots(
     params.symbol,
     params.startTime,
-    params.endTime
+    params.endTime,
+    params.snapshotFilePath
   );
   const snapshotByTimestamp = new Map(recordedSnapshots.map(snap => [snap.timestamp, snap]));
   const candles = recordedSnapshots.map((snap, idx) =>
@@ -247,6 +270,7 @@ async function runBotBacktest(params: BacktestRunParams) {
   const stats = tradeExecutor.getStats();
   console.log('================ BOT BACKTEST REPORT ================');
   console.log(`Symbol: ${params.symbol}`);
+  console.log(`Source file: ${params.snapshotFilePath}`);
   console.log(`Trades: ${stats.trades}`);
   console.log(`Winrate: ${stats.winrate.toFixed(2)}% (W:${stats.wins} / L:${stats.losses})`);
   console.log(`Net PnL: ${stats.pnlTotal.toFixed(2)} USD`);
@@ -255,8 +279,23 @@ async function runBotBacktest(params: BacktestRunParams) {
 }
 
 (async () => {
-  const [, , startArg, endArg, symbol = 'DOGEUSDT', intervalArg] = process.argv;
-  const interval = (intervalArg as '1' | '3' | '5' | '15') ?? '1';
+  const cliArgs = process.argv.slice(2).filter(Boolean);
+  const rawSymbol = cliArgs[0] ?? 'SOLUSDT';
+  let interval: '1' | '3' | '5' | '15' = '1';
+  let startArg: string | undefined;
+  let endArg: string | undefined;
+
+  if (cliArgs[1] && ['1', '3', '5', '15'].includes(cliArgs[1]!)) {
+    interval = cliArgs[1]! as '1' | '3' | '5' | '15';
+    startArg = cliArgs[2];
+    endArg = cliArgs[3];
+  } else {
+    startArg = cliArgs[1];
+    endArg = cliArgs[2];
+  }
+
+  const symbol = normalizeSymbolInput(rawSymbol);
+  const snapshotFilePath = resolveSnapshotFilePath(symbol);
 
   let startTime: number;
   let endTime: number;
@@ -265,12 +304,12 @@ async function runBotBacktest(params: BacktestRunParams) {
     startTime = Number(startArg);
     endTime = Number(endArg);
   } else {
-    const range = await getSnapshotRange(symbol);
+    const range = await getSnapshotRange(symbol, snapshotFilePath);
     startTime = range.start;
     endTime = range.end;
   }
 
-  runBotBacktest({ symbol, startTime, endTime, interval })
+  runBotBacktest({ symbol, startTime, endTime, interval, snapshotFilePath })
     .then(() => process.exit(0))
     .catch(err => {
       console.error('❌ Bot backtest failed:', err);

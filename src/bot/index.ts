@@ -3,6 +3,7 @@
    =============================== */
 dotenv.config();
 import * as fs from 'node:fs';
+import path from 'node:path';
 
 let isShuttingDown = false;
 let stopWatchers: (() => void) | null = null;
@@ -62,6 +63,7 @@ import { getClosedPnLStats, getMarketSnapshot, getTopLiquidSymbols } from '../se
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT, LOG_PATH } from '../market/constants.market.js';
 import { tradingState } from '../core/tradingState.js';
+import { SYMBOL_HISTORY_FILES } from '../market/snapshotStore.js';
 
 const requiredEnvVars = ['BOT_TOKEN', 'BYBIT_API_KEY', 'BYBIT_SECRET_KEY'];
 const missingVars = requiredEnvVars.filter(v => !process.env[v]);
@@ -89,6 +91,8 @@ const mainKeyboard = new Keyboard()
   .text('/stats')
   .text('/stop')
   .text('/download_logs')
+  .row()
+  .text('/download_snapshots')
   .row()
   // .text('/openPosition')
   // .text('/closePosition')
@@ -240,6 +244,31 @@ bot.command('download_logs', async ctx => {
   } catch (error) {
     console.error('Error sending log file:', error);
     await ctx.reply('❌ Error sending log file');
+  }
+});
+
+bot.command('download_snapshots', async ctx => {
+  const files = Object.entries(SYMBOL_HISTORY_FILES);
+  if (!files.length) {
+    await ctx.reply('❌ Нет доступных снапшотов');
+    return;
+  }
+
+  try {
+    await ctx.reply('📦 Отправляю файлы со снапшотами (BTC/ETH/SOL)...');
+    for (const [symbol, filePath] of files) {
+      if (!fs.existsSync(filePath)) {
+        await ctx.reply(`⚠️ Файл для ${symbol} пока не создан`);
+        continue;
+      }
+      const fileName = path.basename(filePath);
+      await ctx.replyWithDocument(new InputFile(fs.createReadStream(filePath), fileName), {
+        caption: `📊 История снапшотов ${symbol}`,
+      });
+    }
+  } catch (error) {
+    console.error('Error sending snapshot files:', error);
+    await ctx.reply('❌ Не удалось отправить снапшоты');
   }
 });
 
