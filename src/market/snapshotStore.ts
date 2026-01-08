@@ -6,20 +6,16 @@ import { INTERVALS, LOG_PATH } from './constants.market.js'; // .js extension re
 const store: Record<string, MarketSnapshot[]> = {};
 const MAX_SNAPSHOTS = 60; // например: 12 × 5 мин = 1 час
 
-const SNAPSHOT_FILES = {
-  live: path.resolve(process.cwd(), 'realSnaps.json'),
-  backtest: path.resolve(process.cwd(), 'backtest.json'),
-} as const;
+const SNAPSHOT_DIR = path.dirname(LOG_PATH);
+const BACKTEST_SNAPSHOT_FILE = path.join(SNAPSHOT_DIR, 'SNAPS_BACKTEST.jsonl');
 
-type SnapshotMode = keyof typeof SNAPSHOT_FILES;
+export const DEFAULT_SNAPSHOT_FILE = BACKTEST_SNAPSHOT_FILE;
+
+type SnapshotMode = 'live' | 'backtest';
 
 let snapshotMode: SnapshotMode = 'live';
-const writeQueues: Record<SnapshotMode, Promise<void>> = {
-  live: Promise.resolve(),
-  backtest: Promise.resolve(),
-};
+let backtestWriteQueue: Promise<void> = Promise.resolve();
 
-const SNAPSHOT_DIR = path.dirname(LOG_PATH);
 const SYMBOL_HISTORY_TARGETS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'] as const;
 type HistorySymbol = (typeof SYMBOL_HISTORY_TARGETS)[number];
 
@@ -78,15 +74,18 @@ function logMemoryUsage() {
 setInterval(logMemoryUsage, INTERVALS.FIVE_MIN); // Логировать каждые 5 минут
 
 function persistSnapshot(snapshot: MarketSnapshot) {
-  const mode = snapshotMode;
-  const targetFile = SNAPSHOT_FILES[mode];
+  if (snapshotMode !== 'backtest') {
+    return;
+  }
+
   const payload = `${JSON.stringify(snapshot)}\n`;
 
-  writeQueues[mode] = writeQueues[mode]
+  backtestWriteQueue = backtestWriteQueue
     .catch(() => {})
-    .then(() => fs.appendFile(targetFile, payload, 'utf-8'))
+    .then(() => ensureSnapshotDirReady)
+    .then(() => fs.appendFile(BACKTEST_SNAPSHOT_FILE, payload, 'utf-8'))
     .catch(err => {
-      console.error(`[SNAPSHOT] Failed to append ${mode} snapshot:`, err);
+      console.error('[SNAPSHOT] Failed to append backtest snapshot:', err);
     });
 }
 

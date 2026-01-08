@@ -6,6 +6,7 @@ import {
   candleState,
 } from '../market/candleBuilder.js';
 import {
+  DEFAULT_SNAPSHOT_FILE,
   saveSnapshot,
   setSnapshotPersistenceMode,
   SYMBOL_HISTORY_FILES,
@@ -83,7 +84,7 @@ function createVolumeTracker(windowMs: number) {
   };
 }
 
-const FALLBACK_SNAPSHOT_FILE_PATH = path.resolve(process.cwd(), 'realSnaps.json');
+const FALLBACK_SNAPSHOT_FILE_PATH = DEFAULT_SNAPSHOT_FILE;
 const HISTORY_SYMBOL_SET = new Set(Object.keys(SYMBOL_HISTORY_FILES));
 
 function normalizeSymbolInput(rawSymbol: string | undefined) {
