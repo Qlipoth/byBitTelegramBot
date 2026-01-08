@@ -155,10 +155,28 @@ export async function startMarketWatcher(
       }
       const now = useSnapshotTime ? rawSnap.timestamp : Date.now();
       const referenceTs = rawSnap.timestamp;
-      const cvdLookup = (minutes: number) =>
-        customCvdProvider
-          ? customCvdProvider(symbol, minutes, referenceTs)
-          : getCVDLastMinutes(symbol, minutes);
+      const cvdFieldMap: Record<number, keyof MarketSnapshot> = {
+        1: 'cvd1m',
+        3: 'cvd3m',
+        15: 'cvd15m',
+        30: 'cvd30m',
+      };
+
+      const cvdLookup = (minutes: number) => {
+        const recordedField = cvdFieldMap[minutes];
+        if (recordedField) {
+          const recordedValue = rawSnap[recordedField];
+          if (typeof recordedValue === 'number') {
+            return recordedValue;
+          }
+        }
+
+        if (customCvdProvider) {
+          return customCvdProvider(symbol, minutes, referenceTs);
+        }
+
+        return getCVDLastMinutes(symbol, minutes);
+      };
       const cvd1m = cvdLookup(1);
       const cvd3m = cvdLookup(3);
       const cvd15m = cvdLookup(15);
