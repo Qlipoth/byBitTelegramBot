@@ -12,7 +12,14 @@ import { tradingState } from '../core/tradingState.js';
 import { buildSyntheticCvdSeries, getCvdDifference } from './cvdBuilder.js';
 import { buildCachePath, fetchBybitCandles, INTERVAL_TO_MS } from './candleLoader.js';
 import dayjs from 'dayjs';
-import type { MarketSnapshot } from '../market/types.js';
+import type { MarketSnapshot, SymbolValue } from '../market/types.js';
+import { getCvdThreshold } from '../market/candleBuilder.js';
+import { selectCoinThresholds } from '../market/utils.js';
+import {
+  BASE_IMPULSE_THRESHOLDS,
+  LIQUID_IMPULSE_THRESHOLDS,
+  PRIORITY_COINS,
+} from '../market/constants.market.js';
 
 interface BacktestRunParams {
   symbol: string;
@@ -71,13 +78,41 @@ function createVolumeTracker(windowMs: number) {
   };
 }
 
+const SNAPSHOT_FILE_PATH = path.resolve(process.cwd(), 'realSnaps.json');
+
+function isPrioritySymbol(symbol: string) {
+  return PRIORITY_COINS.includes(symbol as any);
+}
+
+function ensureSnapshotThresholds(symbol: string, snap: MarketSnapshot): MarketSnapshot {
+  if (snap.thresholds) return snap;
+  const isPriority = isPrioritySymbol(symbol);
+  const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+  const { oiThreshold } = selectCoinThresholds(symbol as SymbolValue);
+  snap.thresholds = {
+    moveThreshold,
+    cvdThreshold,
+    oiThreshold,
+    impulse: {
+      PRICE_SURGE_PCT: moveThreshold,
+      VOL_SURGE_CVD: cvdThreshold,
+      OI_INCREASE_PCT: isPriority
+        ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
+        : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
+      OI_SURGE_PCT: isPriority
+        ? LIQUID_IMPULSE_THRESHOLDS.OI_SURGE_PCT
+        : BASE_IMPULSE_THRESHOLDS.OI_SURGE_PCT,
+    },
+  };
+  return snap;
+}
+
 async function loadRecordedSnapshots(
   symbol: string,
   startTime: number,
   endTime: number
 ): Promise<MarketSnapshot[]> {
-  const filePath = path.resolve(process.cwd(), 'realSnaps.json');
-  const raw = await fs.readFile(filePath, 'utf-8');
+  const raw = await fs.readFile(SNAPSHOT_FILE_PATH, 'utf-8');
   const snapshots: MarketSnapshot[] = [];
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -85,7 +120,7 @@ async function loadRecordedSnapshots(
       const parsed = JSON.parse(line) as MarketSnapshot;
       if (parsed.symbol !== symbol) continue;
       if (parsed.timestamp < startTime || parsed.timestamp > endTime) continue;
-      snapshots.push(parsed);
+      snapshots.push(ensureSnapshotThresholds(symbol, parsed));
     } catch (err) {
       console.warn('[BACKTEST] Failed to parse snapshot line:', err);
     }
@@ -95,6 +130,30 @@ async function loadRecordedSnapshots(
     throw new Error('No recorded snapshots found in realSnaps.json');
   }
   return snapshots;
+}
+
+async function getSnapshotRange(symbol: string): Promise<{ start: number; end: number }> {
+  const raw = await fs.readFile(SNAPSHOT_FILE_PATH, 'utf-8');
+  let start: number | null = null;
+  let end: number | null = null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as MarketSnapshot;
+      if (parsed.symbol !== symbol) continue;
+      const ts = parsed.timestamp;
+      if (start === null || ts < start) start = ts;
+      if (end === null || ts > end) end = ts;
+    } catch (err) {
+      console.warn('[BACKTEST] Failed to parse snapshot line for range:', err);
+    }
+  }
+
+  if (start === null || end === null) {
+    throw new Error(`No snapshots found in realSnaps.json for symbol ${symbol}`);
+  }
+
+  return { start, end };
 }
 
 function snapshotToCandle(
@@ -147,9 +206,9 @@ async function runBotBacktest(params: BacktestRunParams) {
 
   // Warm up candle builder history
   candleState[params.symbol] = undefined as any;
-  const warmupCount = Math.min(50, recordedSnapshots.length);
+  const warmupCount = Math.min(30, recordedSnapshots.length);
   for (let i = 0; i < warmupCount; i++) {
-    ingestHistoricalCandle(params.symbol, candles[i]!);
+    //ingestHistoricalCandle(params.symbol, candles[i]!);
     saveSnapshot(recordedSnapshots[i]!);
   }
 
@@ -158,9 +217,14 @@ async function runBotBacktest(params: BacktestRunParams) {
   tradingState.enable();
   await startMarketWatcher(params.symbol, console.log, {
     tradeExecutor,
+    warmupSnapshots: recordedSnapshots.slice(0, warmupCount),
     snapshotProvider: async () => {
       if (cursor >= recordedSnapshots.length) return null;
       const snap = recordedSnapshots[cursor]!;
+      const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+      console.log(
+        `[SNAP/BACKTEST] ${params.symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
+      );
       ingestHistoricalCandle(params.symbol, candles[cursor]!);
       cursor++;
       return snap;
@@ -190,16 +254,26 @@ async function runBotBacktest(params: BacktestRunParams) {
   console.log(`Max Drawdown: ${stats.maxDrawdown.toFixed(2)} USD`);
 }
 
-const [, , startArg, endArg, symbol = 'ETHUSDT', intervalArg] = process.argv;
-const endTime = dayjs(1767801677110).valueOf();
+(async () => {
+  const [, , startArg, endArg, symbol = 'DOGEUSDT', intervalArg] = process.argv;
+  const interval = (intervalArg as '1' | '3' | '5' | '15') ?? '1';
 
-const diffMs = dayjs(endTime).diff(dayjs(1767792660000));
-const startTime = endTime - diffMs;
-const interval = '1';
+  let startTime: number;
+  let endTime: number;
 
-runBotBacktest({ symbol, startTime, endTime, interval })
-  .then(() => process.exit(0))
-  .catch(err => {
-    console.error('❌ Bot backtest failed:', err);
-    process.exit(1);
-  });
+  if (startArg && endArg) {
+    startTime = Number(startArg);
+    endTime = Number(endArg);
+  } else {
+    const range = await getSnapshotRange(symbol);
+    startTime = range.start;
+    endTime = range.end;
+  }
+
+  runBotBacktest({ symbol, startTime, endTime, interval })
+    .then(() => process.exit(0))
+    .catch(err => {
+      console.error('❌ Bot backtest failed:', err);
+      process.exit(1);
+    });
+})();

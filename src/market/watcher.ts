@@ -15,17 +15,16 @@ import {
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
 } from './constants.market.js';
-import {
-  calculateEntryScores,
-  getSignalAgreement,
-  confirmEntry,
-  selectCoinThresholds,
-  ensureLiquidThresholdsCalibrated,
-} from './utils.js';
+import { calculateEntryScores, getSignalAgreement, confirmEntry, selectCoinThresholds } from './utils.js';
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
 import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
-import type { MarketSnapshot, MarketState, SymbolValue } from './types.js';
+import type {
+  IMPULSE_THRESHOLDS_CONFIG,
+  MarketSnapshot,
+  MarketState,
+  SymbolValue,
+} from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
 import { getCvdThreshold } from './candleBuilder.js';
 import { findStopLossLevel } from './paperPositionManager.js';
@@ -59,7 +58,6 @@ export async function initializeMarketWatcher(
   onAlert: (msg: string) => void,
   options: WatcherOptions = {}
 ) {
-  await ensureLiquidThresholdsCalibrated();
   const symbols = await getTopLiquidSymbols(COINS_COUNT);
   console.log(`🔄 Tracking ${symbols.length} symbols`);
 
@@ -105,13 +103,46 @@ export async function startMarketWatcher(
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
   const entryMode = options.entryMode ?? 'classic';
   const useSnapshotTime = options.enableRealtime === false;
+  const coinThresholds = selectCoinThresholds(symbol as SymbolValue);
+  type SnapshotThresholds = {
+    moveThreshold: number;
+    cvdThreshold: number;
+    oiThreshold: number;
+    impulse: IMPULSE_THRESHOLDS_CONFIG;
+  };
+  type SnapshotWithThresholds = MarketSnapshot & { thresholds: SnapshotThresholds };
+  const buildThresholds = (): SnapshotThresholds => {
+    const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+    return {
+      moveThreshold,
+      cvdThreshold,
+      oiThreshold: coinThresholds.oiThreshold,
+      impulse: {
+        PRICE_SURGE_PCT: moveThreshold,
+        VOL_SURGE_CVD: cvdThreshold,
+        OI_INCREASE_PCT: isPriorityCoin
+          ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
+          : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
+        OI_SURGE_PCT: isPriorityCoin
+          ? LIQUID_IMPULSE_THRESHOLDS.OI_SURGE_PCT
+          : BASE_IMPULSE_THRESHOLDS.OI_SURGE_PCT,
+      },
+    };
+  };
+  const ensureSnapshotThresholds = (snap: MarketSnapshot): SnapshotWithThresholds => {
+    if (!snap.thresholds) {
+      snap.thresholds = buildThresholds();
+    }
+    return snap as SnapshotWithThresholds;
+  };
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
   const snapshots = options.warmupSnapshots ?? (await preloadMarketSnapshots(symbol));
 
   for (const snap of snapshots) {
-    saveSnapshot(snap); // ТВОЯ существующая функция
+    const normalized = ensureSnapshotThresholds(snap);
+    saveSnapshot(normalized); // ТВОЯ существующая функция
   }
 
   let intervalId: NodeJS.Timeout | null = null;
@@ -132,13 +163,17 @@ export async function startMarketWatcher(
       const cvd3m = cvdLookup(3);
       const cvd15m = cvdLookup(15);
       const cvd30m = cvdLookup(30);
-      const snap: MarketSnapshot = {
+      const snap = ensureSnapshotThresholds({
         ...rawSnap,
         cvd1m,
         cvd3m,
         cvd15m,
         cvd30m,
-      };
+      });
+      const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+      console.log(
+        `[SNAP] ${symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
+      );
       saveSnapshot(snap);
       logData.cvd = {
         cvd1m,
@@ -218,7 +253,7 @@ export async function startMarketWatcher(
       // calcPercentChange() опирается на свечи из trade-stream и часто даёт 0 при недостатке истории.
       // Для сигнальной логики надёжнее использовать изменения цены по снапшотам.
       const pricePercentChange = delta15m.priceChangePct;
-      const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
+      const { moveThreshold, cvdThreshold, oiThreshold, impulse } = snap.thresholds!;
       const habrMode = entryMode === 'adaptive' && adaptiveBollingerStrategy.isSupported(symbol);
 
       state.phase = has30m
@@ -229,14 +264,14 @@ export async function startMarketWatcher(
             settings: {
               moveThreshold,
               cvdThreshold,
-              oiThreshold: selectCoinThresholds(symbol as SymbolValue).oiThreshold,
+              oiThreshold,
             },
           })
         : 'range';
 
       logData.phase = state.phase;
       logData.pricePercentChange = pricePercentChange;
-      logData.thresholds = { cvdThreshold, moveThreshold };
+      logData.thresholds = { cvdThreshold, moveThreshold, oiThreshold };
       logData.fundingRate = snap.fundingRate;
 
       // =====================
@@ -263,16 +298,7 @@ export async function startMarketWatcher(
         details = adaptive.details;
         logData.habr = { ready: adaptive.ready };
       } else {
-        impulseForClassic = {
-          PRICE_SURGE_PCT: moveThreshold,
-          VOL_SURGE_CVD: cvdThreshold,
-          OI_INCREASE_PCT: isPriorityCoin
-            ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
-            : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
-          OI_SURGE_PCT: isPriorityCoin
-            ? LIQUID_IMPULSE_THRESHOLDS.OI_SURGE_PCT
-            : BASE_IMPULSE_THRESHOLDS.OI_SURGE_PCT,
-        };
+        impulseForClassic = impulse;
 
         const classicScores = calculateEntryScores({
           state,
@@ -341,8 +367,15 @@ export async function startMarketWatcher(
           cvd3m: cvd3m || 0,
           impulse: impulseForClassic!,
           phase: state.phase,
+          confirmedAt: snap.timestamp,
         });
         console.log('2) confirmed value:', confirmed);
+        if (confirmed) {
+          const confirmTime = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+          console.log(
+            `[CONFIRM_ENTRY] timestamp=${confirmTime} (ts=${snap.timestamp}) | price=${snap.price}`
+          );
+        }
       }
 
       const hadPending = tradeExecutor.hasPending(symbol);

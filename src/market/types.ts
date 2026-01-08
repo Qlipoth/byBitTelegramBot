@@ -11,6 +11,17 @@ export interface MarketSnapshot {
   cvd3m?: number;
   cvd15m?: number;
   cvd30m?: number;
+  thresholds?: {
+    moveThreshold?: number;
+    cvdThreshold?: number;
+    oiThreshold?: number;
+    impulse?: {
+      PRICE_SURGE_PCT: number;
+      OI_INCREASE_PCT: number;
+      OI_SURGE_PCT: number;
+      VOL_SURGE_CVD: number;
+    };
+  };
 }
 
 export interface MarketDelta {
@@ -96,6 +107,7 @@ export interface ConfirmEntryParams {
   cvd3m: number;
   impulse: IMPULSE_THRESHOLDS_CONFIG;
   phase: MarketPhase;
+  confirmedAt?: number;
 }
 
 export type SymbolValue = (typeof SYMBOLS)[keyof typeof SYMBOLS];

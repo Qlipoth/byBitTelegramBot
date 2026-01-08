@@ -51,18 +51,46 @@ export function calculateEntryScores({
   let shortScore = 0;
 
   const details = { phase: 0, oi: 0, funding: 0, cvd: 0, impulse: 0, rsi: 0, trend: 0, csi: 0 };
+  const awardScore = (
+    side: 'LONG' | 'SHORT',
+    amount: number,
+    component: string,
+    context?: string
+  ) => {
+    if (!amount) return;
+    if (side === 'LONG') {
+      longScore += amount;
+    } else {
+      shortScore += amount;
+    }
+    const sign = amount >= 0 ? '+' : '';
+    console.log(
+      `[ENTRY_SCORE][${component}] ${side} ${sign}${amount.toFixed(2)}${
+        context ? ` | ${context}` : ''
+      }`
+    );
+  };
 
   /* =====================
    1️⃣ Phase (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
   if (state.phase === 'blowoff') return { longScore: 0, shortScore: 0, entrySignal: `🚫 BLOWOFF` };
-  if (state.phase === 'accumulation') longScore += 15;
-  else if (state.phase === 'distribution') shortScore += 15;
-  else if (state.phase === 'trend') {
-    if (isBull) longScore += 15;
-    if (isBear) shortScore += 15;
+  if (state.phase === 'accumulation') {
+    awardScore('LONG', 15, 'PHASE', `phase=${state.phase}`);
+  } else if (state.phase === 'distribution') {
+    awardScore('SHORT', 15, 'PHASE', `phase=${state.phase}`);
+  } else if (state.phase === 'trend') {
+    if (isBull) {
+      awardScore('LONG', 15, 'PHASE', 'phase=trend isBull');
+    }
+    if (isBear) {
+      awardScore('SHORT', 15, 'PHASE', 'phase=trend isBear');
+    }
   }
-  details.phase = 15;
+  details.phase =
+    (state.phase === 'accumulation' ? 15 : 0) +
+    (state.phase === 'distribution' ? 15 : 0) +
+    (state.phase === 'trend' ? (isBull ? 15 : 0) + (isBear ? 15 : 0) : 0);
 
   /* =====================
    2️⃣ OI dynamics (БЕЗ ИЗМЕНЕНИЙ)
@@ -76,17 +104,23 @@ export function calculateEntryScores({
   const oiShort =
     (isDataMature ? Math.log1p(Math.max(-oi30, 0)) * 10 : 0) + Math.log1p(Math.max(-oi15, 0)) * 10;
 
-  longScore += Math.min(oiLong, 25);
-  shortScore += Math.min(oiShort, 25);
-  details.oi = Math.round(Math.max(oiLong, oiShort));
+  const oiLongBonus = Math.min(oiLong, 25);
+  const oiShortBonus = Math.min(oiShort, 25);
+  awardScore('LONG', oiLongBonus, 'OI', `oi30=${oi30.toFixed(2)} oi15=${oi15.toFixed(2)}`);
+  awardScore('SHORT', oiShortBonus, 'OI', `oi30=${oi30.toFixed(2)} oi15=${oi15.toFixed(2)}`);
+  details.oi = Math.round(Math.max(oiLongBonus, oiShortBonus));
 
   /* =====================
    3️⃣ Funding (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
   const fRate = snap.fundingRate ?? 0;
-  if (fRate < -0.0001) longScore += 10;
-  if (fRate > 0.0001) shortScore += 10;
-  details.funding = 10;
+  if (fRate < -0.0001) {
+    awardScore('LONG', 10, 'FUNDING', `fundingRate=${fRate}`);
+  }
+  if (fRate > 0.0001) {
+    awardScore('SHORT', 10, 'FUNDING', `fundingRate=${fRate}`);
+  }
+  details.funding = fRate === 0 ? 0 : 10;
 
   /* =====================
    4️⃣ CVD strength (АДАПТИРОВАНО ПОД ПОРОГ)
@@ -100,11 +134,23 @@ export function calculateEntryScores({
   const cvd15Norm = Math.min(Math.abs(cvd15m) / dynamicCvd15Threshold, 1);
   const cvd3Norm = Math.min(Math.abs(cvd3m) / dynamicCvd3Threshold, 1);
 
-  if (cvd15m > 0) longScore += cvd15Norm * 15;
-  if (cvd15m < 0) shortScore += cvd15Norm * 15;
+  if (cvd15m > 0) {
+    const bonus = cvd15Norm * 15;
+    awardScore('LONG', bonus, 'CVD15', `cvd15m=${cvd15m.toFixed(0)}`);
+  }
+  if (cvd15m < 0) {
+    const bonus = cvd15Norm * 15;
+    awardScore('SHORT', bonus, 'CVD15', `cvd15m=${cvd15m.toFixed(0)}`);
+  }
 
-  if (cvd3m > 0) longScore += cvd3Norm * 10;
-  if (cvd3m < 0) shortScore += cvd3Norm * 10;
+  if (cvd3m > 0) {
+    const bonus = cvd3Norm * 10;
+    awardScore('LONG', bonus, 'CVD3', `cvd3m=${cvd3m.toFixed(0)}`);
+  }
+  if (cvd3m < 0) {
+    const bonus = cvd3Norm * 10;
+    awardScore('SHORT', bonus, 'CVD3', `cvd3m=${cvd3m.toFixed(0)}`);
+  }
   details.cvd = Math.round(cvd15Norm * 15 + cvd3Norm * 10);
 
   /* =====================
@@ -114,26 +160,65 @@ export function calculateEntryScores({
   const price5m = delta5m?.priceChangePct ?? 0;
 
   // 1m Impulse (Сравнение с живым порогом ATR)
-  if (price1m > impulse.PRICE_SURGE_PCT) longScore += 10;
-  if (price1m < -impulse.PRICE_SURGE_PCT) shortScore += 10;
+  if (price1m > impulse.PRICE_SURGE_PCT) {
+    awardScore(
+      'LONG',
+      10,
+      'IMPULSE_1M',
+      `price1m=${price1m.toFixed(3)} thresh=${impulse.PRICE_SURGE_PCT}`
+    );
+  }
+  if (price1m < -impulse.PRICE_SURGE_PCT) {
+    awardScore(
+      'SHORT',
+      10,
+      'IMPULSE_1M',
+      `price1m=${price1m.toFixed(3)} thresh=${impulse.PRICE_SURGE_PCT}`
+    );
+  }
 
   // Velocity: Если 5м делает основной вклад в 15м
   const isVelocityLong = price5m > 0 && price5m > (delta15m?.priceChangePct ?? 0) * 0.7;
   const isVelocityShort = price5m < 0 && price5m < (delta15m?.priceChangePct ?? 0) * 0.7;
 
-  if (isVelocityLong) longScore += 5;
-  if (isVelocityShort) shortScore += 5;
-  details.impulse = Math.max(price1m > impulse.PRICE_SURGE_PCT ? 10 : 0, isVelocityLong ? 5 : 0);
+  if (isVelocityLong) {
+    awardScore(
+      'LONG',
+      5,
+      'VELOCITY_5M',
+      `price5m=${price5m.toFixed(3)} delta15m=${(delta15m?.priceChangePct ?? 0).toFixed(3)}`
+    );
+  }
+  if (isVelocityShort) {
+    awardScore(
+      'SHORT',
+      5,
+      'VELOCITY_5M',
+      `price5m=${price5m.toFixed(3)} delta15m=${(delta15m?.priceChangePct ?? 0).toFixed(3)}`
+    );
+  }
+  details.impulse =
+    (price1m > impulse.PRICE_SURGE_PCT ? 10 : 0) +
+    (price1m < -impulse.PRICE_SURGE_PCT ? 10 : 0) +
+    (isVelocityLong || isVelocityShort ? 5 : 0);
 
   /* =====================
    6️⃣ RSI & Trend (БЕЗ ИЗМЕНЕНИЙ)
   ===================== */
-  if (rsi >= 55) longScore += 5;
-  if (rsi <= 45) shortScore += 5;
-  if (isBull) longScore += 5;
-  if (isBear) shortScore += 5;
-  details.rsi = 5;
-  details.trend = 5;
+  if (rsi >= 55) {
+    awardScore('LONG', 5, 'RSI', `rsi=${rsi.toFixed(2)}`);
+  }
+  if (rsi <= 45) {
+    awardScore('SHORT', 5, 'RSI', `rsi=${rsi.toFixed(2)}`);
+  }
+  if (isBull) {
+    awardScore('LONG', 5, 'TREND', 'isBull=true');
+  }
+  if (isBear) {
+    awardScore('SHORT', 5, 'TREND', 'isBear=true');
+  }
+  details.rsi = (rsi >= 55 ? 5 : 0) + (rsi <= 45 ? 5 : 0);
+  details.trend = (isBull ? 5 : 0) + (isBear ? 5 : 0);
 
   // Clamp
   longScore = Math.min(100, Math.round(longScore));
@@ -142,6 +227,10 @@ export function calculateEntryScores({
   let entrySignal = `⚪ Нет сетапа (L:${longScore} S:${shortScore})`;
   if (longScore >= 65) entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
   else if (shortScore >= 65) entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
+
+  console.log(
+    `[ENTRY_SCORE][TOTAL] 🟢LONG=${longScore} 🔴SHORT=${shortScore} | signal=${entrySignal}`
+  );
 
   return { longScore, shortScore, entrySignal, details };
 }
@@ -288,6 +377,7 @@ export function confirmEntry({
   cvd3m,
   impulse,
   phase,
+  confirmedAt,
 }: ConfirmEntryParams): boolean {
   if (!delta || !impulse || cvd3m === undefined) {
     console.warn(`[CONFIRM_ENTRY] Missing data for confirmation`);
@@ -298,21 +388,27 @@ export function confirmEntry({
 
   /**
    * Коэффициент чувствительности подтверждения:
-   * В тренде (trend) нам нужно подтверждение продолжения силы — берем 0.5 от порога.
-   * В накоплении/распределении/ренже — ловим начало, достаточно 0.3 от порога.
+   * В тренде (trend) берем 0.35 от порога, в остальных фазах — 0.2.
+   * Дополнительно не опускаемся ниже 15% базового порога, чтобы совсем не ловить шум.
    */
-  const sensitivity = phase === 'trend' ? 0.5 : 0.3;
-  const minMove = impulse.PRICE_SURGE_PCT * sensitivity;
+  const sensitivity = phase === 'trend' ? 0.35 : 0.2;
+  const minMove = Math.max(impulse.PRICE_SURGE_PCT * sensitivity, impulse.PRICE_SURGE_PCT * 0.15);
+  const cvdTolerance = impulse.VOL_SURGE_CVD * 0.25;
 
   // Логика подтверждения для LONG
   if (signal === 'LONG') {
     // 1. Цена за последнюю минуту должна пройти хотя бы minMove
-    // 2. CVD за последние 3 минуты должен быть строго положительным
-    const confirmed = pChange > minMove && cvd3m > 0;
+    // 2. CVD за последние 3 минуты должен быть не ниже небольшого отрицательного допуска
+    const confirmed = pChange > minMove && cvd3m > -cvdTolerance;
 
     if (confirmed) {
+      const timeLabel = confirmedAt ? dayjs(confirmedAt).format('YYYY-MM-DD HH:mm:ss') : 'n/a';
       console.log(
-        `[CONFIRM_ENTRY] ✅ LONG CONFIRMED | Phase: ${phase} | pChange: ${pChange.toFixed(3)}% > minMove: ${minMove.toFixed(3)}% | cvd3m: ${cvd3m}`
+        `[CONFIRM_ENTRY] ✅ LONG CONFIRMED @ ${timeLabel} | Phase: ${phase} | pChange: ${pChange.toFixed(
+          3
+        )}% > minMove: ${minMove.toFixed(3)}% | cvd3m: ${cvd3m.toFixed(
+          0
+        )} > -tol:${cvdTolerance.toFixed(0)}`
       );
     }
     return confirmed;
@@ -321,12 +417,17 @@ export function confirmEntry({
   // Логика подтверждения для SHORT
   if (signal === 'SHORT') {
     // 1. Цена за последнюю минуту должна упасть ниже -minMove
-    // 2. CVD за последние 3 минуты должен быть строго отрицательным
-    const confirmed = pChange < -minMove && cvd3m < 0;
+    // 2. CVD за последние 3 минуты должен быть не выше небольшого положительного допуска
+    const confirmed = pChange < -minMove && cvd3m < cvdTolerance;
 
     if (confirmed) {
+      const timeLabel = confirmedAt ? dayjs(confirmedAt).format('YYYY-MM-DD HH:mm:ss') : 'n/a';
       console.log(
-        `[CONFIRM_ENTRY] ✅ SHORT CONFIRMED | Phase: ${phase} | pChange: ${pChange.toFixed(3)}% < minMove: -${minMove.toFixed(3)}% | cvd3m: ${cvd3m}`
+        `[CONFIRM_ENTRY] ✅ SHORT CONFIRMED @ ${timeLabel} | Phase: ${phase} | pChange: ${pChange.toFixed(
+          3
+        )}% < -minMove: -${minMove.toFixed(3)}% | cvd3m: ${cvd3m.toFixed(
+          0
+        )} < tol:${cvdTolerance.toFixed(0)}`
       );
     }
     return confirmed;
