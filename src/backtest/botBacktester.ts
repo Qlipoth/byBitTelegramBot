@@ -259,9 +259,9 @@ async function runBotBacktest(params: BacktestRunParams) {
       if (typeof recordedValue === 'number') {
         return recordedValue;
       }
-      const windowMs = minutes * 60_000;
-      const fromTs = referenceTs - windowMs;
-      return getCvdDifference(cvdSeries, fromTs, referenceTs);
+      throw new Error(
+        `[BACKTEST] Missing ${minutes}m CVD in snapshots for ${params.symbol} @ ${referenceTs}`
+      );
     },
     intervalMs: 0,
     enableRealtime: false,

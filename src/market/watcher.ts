@@ -15,7 +15,12 @@ import {
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
 } from './constants.market.js';
-import { calculateEntryScores, getSignalAgreement, confirmEntry, selectCoinThresholds } from './utils.js';
+import {
+  calculateEntryScores,
+  getSignalAgreement,
+  confirmEntry,
+  selectCoinThresholds,
+} from './utils.js';
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
 import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
@@ -26,7 +31,6 @@ import type {
   SymbolValue,
 } from './types.js';
 import { getCVDLastMinutes } from './cvdTracker.js';
-import { getCvdThreshold } from './candleBuilder.js';
 import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
 import { realTradeManager } from './realTradeManager.js';
@@ -38,6 +42,79 @@ const stateBySymbol = new Map<string, MarketState>();
 
 // symbol -> FSM instance
 const tradeFSMBySymbol = new Map<string, ReturnType<typeof createFSM>>();
+
+const ATR_PERIOD = 14;
+const CSI_WINDOW = 30;
+const CSI_BODY_WINDOW = 5;
+
+function computeSnapshotATR(snaps: MarketSnapshot[], period: number = ATR_PERIOD): number {
+  if (snaps.length < 2) return 0;
+
+  const windowSize = Math.max(period + 1, period * 2);
+  const startIdx = Math.max(1, snaps.length - windowSize);
+  const ranges: number[] = [];
+
+  for (let i = startIdx; i < snaps.length; i++) {
+    const curr = snaps[i];
+    const prev = snaps[i - 1];
+    if (!curr || !prev) continue;
+    ranges.push(Math.abs(curr.price - prev.price));
+  }
+
+  if (ranges.length === 0) {
+    return 0;
+  }
+
+  const seedLength = Math.min(period, ranges.length);
+  let atr = ranges.slice(0, seedLength).reduce((sum, value) => sum + value, 0) / seedLength;
+
+  for (let i = seedLength; i < ranges.length; i++) {
+    atr = (atr * (period - 1) + ranges[i]!) / period;
+  }
+
+  return Number(atr.toFixed(6));
+}
+
+function computeSnapshotCSI(snaps: MarketSnapshot[]): number {
+  if (snaps.length < 2) return 0;
+
+  const window = snaps.slice(-CSI_WINDOW);
+  if (window.length < 2) return 0;
+
+  const bodyWindow = window.slice(-CSI_BODY_WINDOW);
+  if (bodyWindow.length < 2) return 0;
+
+  const prices = window.map(s => s.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const priceRange = Math.max(maxPrice - minPrice, 1e-8);
+
+  const bodyStart = bodyWindow[0]!;
+  const bodyEnd = bodyWindow[bodyWindow.length - 1]!;
+  const bodyMove = bodyEnd.price - bodyStart.price;
+  const bodyRatio = Math.min(Math.abs(bodyMove) / priceRange, 1);
+
+  const avgVolume =
+    window.reduce((sum, snap) => sum + (snap.volume24h ?? 0), 0) / window.length || 0;
+  const shortVolume =
+    bodyWindow.reduce((sum, snap) => sum + (snap.volume24h ?? 0), 0) / bodyWindow.length || 0;
+  const volumeScore =
+    avgVolume > 0 ? Math.min(shortVolume / avgVolume, 3) / 3 : shortVolume > 0 ? 1 : 0;
+
+  const direction = bodyMove >= 0 ? 1 : -1;
+  const csi = direction * (bodyRatio * 0.6 + volumeScore * 0.4);
+
+  return Number(csi.toFixed(4));
+}
+
+type SnapshotThresholds = {
+  moveThreshold: number;
+  cvdThreshold: number;
+  oiThreshold: number;
+  impulse: IMPULSE_THRESHOLDS_CONFIG;
+};
+
+type SnapshotWithThresholds = MarketSnapshot & { thresholds: SnapshotThresholds };
 
 interface WatcherOptions {
   tradeExecutor?: TradeExecutor;
@@ -112,14 +189,13 @@ export async function startMarketWatcher(
   };
   type SnapshotWithThresholds = MarketSnapshot & { thresholds: SnapshotThresholds };
   const buildThresholds = (): SnapshotThresholds => {
-    const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
     return {
-      moveThreshold,
-      cvdThreshold,
+      moveThreshold: BASE_IMPULSE_THRESHOLDS.PRICE_SURGE_PCT,
+      cvdThreshold: BASE_IMPULSE_THRESHOLDS.VOLUME_HIGH_PCT,
       oiThreshold: coinThresholds.oiThreshold,
       impulse: {
-        PRICE_SURGE_PCT: moveThreshold,
-        VOL_SURGE_CVD: cvdThreshold,
+        PRICE_SURGE_PCT: BASE_IMPULSE_THRESHOLDS.PRICE_SURGE_PCT,
+        VOL_SURGE_CVD: BASE_IMPULSE_THRESHOLDS.VOLUME_HIGH_PCT,
         OI_INCREASE_PCT: isPriorityCoin
           ? LIQUID_IMPULSE_THRESHOLDS.OI_INCREASE_PCT
           : BASE_IMPULSE_THRESHOLDS.OI_INCREASE_PCT,
@@ -189,9 +265,7 @@ export async function startMarketWatcher(
         cvd30m,
       });
       const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
-      console.log(
-        `[SNAP] ${symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
-      );
+      console.log(`[SNAP] ${symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`);
       saveSnapshot(snap);
       logData.cvd = {
         cvd1m,
@@ -412,15 +486,16 @@ export async function startMarketWatcher(
 
       console.log('3) currentPos:', JSON.stringify(currentPos));
 
+      const atr = computeSnapshotATR(snaps, ATR_PERIOD);
+      const csi = computeSnapshotCSI(snaps);
+
       const exitCheck =
         fsm.state === 'OPEN' && currentPos
           ? shouldExitPosition({
               fsm,
-              signal,
-              symbol,
-              cvd3m,
-              fundingRate: snap.fundingRate,
-              currentPrice: snap.price,
+              snapshot: snap,
+              atr,
+              csi,
               now,
               entryPrice: currentPos.entryPrice, // Берем реальную цену входа
               longScore,

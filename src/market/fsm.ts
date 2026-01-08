@@ -1,6 +1,7 @@
 // src/market/fsm.ts
 import { tradingState } from '../core/tradingState.js';
-import { getATR, getCSI, getCvdThreshold } from './candleBuilder.js';
+import type { MarketSnapshot } from './types.js';
+import { BASE_IMPULSE_THRESHOLDS } from './constants.market.js';
 
 export type TradeSide = 'LONG' | 'SHORT';
 
@@ -168,43 +169,48 @@ export type ExitReason =
 
 export function shouldExitPosition({
   fsm,
-  phase, // Добавляем фазу
-  symbol,
-  cvd3m,
-  fundingRate,
+  phase,
+  snapshot,
+  atr,
+  csi,
   now,
-  currentPrice,
   entryPrice,
-  longScore, // Добавляем баллы для оценки силы
+  longScore,
   shortScore,
 }: {
   fsm: FSMContext;
-  signal: string;
   phase: string;
-  symbol: string;
-  cvd3m: number;
-  fundingRate: number;
+  snapshot: MarketSnapshot;
+  atr: number;
+  csi: number;
   now: number;
-  currentPrice: number;
   entryPrice: number;
   longScore: number;
   shortScore: number;
 }): { exit: boolean; reason: ExitReason } {
   if (fsm.state !== 'OPEN' || !fsm.side) return { exit: false, reason: 'NONE' };
 
+  const currentPrice = snapshot.price;
+  const fundingRate = Number(snapshot.fundingRate || 0);
+  const cvd3m = typeof snapshot.cvd3m === 'number' ? snapshot.cvd3m : 0;
+  const fallbackThresholds = {
+    moveThreshold: BASE_IMPULSE_THRESHOLDS.PRICE_SURGE_PCT,
+    cvdThreshold: BASE_IMPULSE_THRESHOLDS.VOLUME_HIGH_PCT,
+  };
+  const thresholds = snapshot.thresholds ?? fallbackThresholds;
+  const moveThreshold = thresholds.moveThreshold ?? fallbackThresholds.moveThreshold;
+  const cvdThreshold = thresholds.cvdThreshold ?? fallbackThresholds.cvdThreshold;
+
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
   const timeInPosition = now - (fsm.openedAt || 0);
 
   // 1. ДИНАМИЧЕСКИЕ ПОРОГИ (Вместо статичных EXIT_THRESHOLDS)
-  const atr = getATR(symbol);
-  const { cvdThreshold, moveThreshold } = getCvdThreshold(symbol);
-  const csi = getCSI(symbol);
+  //const atrPct = atr > 0 ? (atr / currentPrice) * 100 : 0;
+  //const dynamicStopLoss = Math.max(atrPct * 1.5, moveThreshold, EXIT_THRESHOLDS.STOP_LOSS_PCT);
+  const dynamicStopLoss = Math.max(moveThreshold, EXIT_THRESHOLDS.STOP_LOSS_PCT);
 
   // Динамический стоп-лосс: если ATR вырос, даем позиции больше "дышать"
   // Но не меньше твоего базового стопа
-  const dynamicStopLoss = Math.max((atr / currentPrice) * 100 * 1.5, EXIT_THRESHOLDS.STOP_LOSS_PCT);
-
-  // 2. ЖЕСТКИЙ СТОП-ЛОСС (Теперь динамический)
   if (pnlPct <= -dynamicStopLoss) {
     return { exit: true, reason: 'STOP_LOSS' };
   }
@@ -216,9 +222,10 @@ export function shouldExitPosition({
   }
 
   const isMicroProfit = pnlPct > 0 && pnlPct < 0.2; // Фиксированный порог "шумового" профита
+  const cvdMomentum = cvdThreshold > 0 ? cvd3m / cvdThreshold : 0;
 
   // Если профит копеечный, игнорируем мелкие развороты CVD, даем цене шанс
-  if (isMicroProfit && Math.abs(csi) < 0.4) {
+  if (isMicroProfit && Math.abs(cvdMomentum) < 0.2) {
     return { exit: false, reason: 'NONE' };
   }
 
@@ -234,7 +241,10 @@ export function shouldExitPosition({
 
   if (timeInPosition > 60_000 && isCvdOpposed) {
     // Доп. проверка: действительно ли свеча против нас "полная"?
-    if ((fsm.side === 'LONG' && csi < -0.3) || (fsm.side === 'SHORT' && csi > 0.3)) {
+    if (
+      (fsm.side === 'LONG' && cvdMomentum < -0.5) ||
+      (fsm.side === 'SHORT' && cvdMomentum > 0.5)
+    ) {
       return { exit: true, reason: 'CVD_REVERSAL' };
     }
   }
@@ -243,7 +253,7 @@ export function shouldExitPosition({
   if (pnlPct >= EXIT_THRESHOLDS.TAKE_PROFIT_PCT) {
     const currentScore = fsm.side === 'LONG' ? longScore : shortScore;
     // Если импульс выдохся (CSI близок к 0) и баллы упали — забираем профит
-    if (Math.abs(csi) < 0.1 || currentScore < 40) {
+    if (Math.abs(cvdMomentum) < 0.1 || currentScore < 40) {
       return { exit: true, reason: 'TAKE_PROFIT_SIGNAL_WEAK' };
     }
   }
