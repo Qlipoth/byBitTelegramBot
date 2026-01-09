@@ -567,6 +567,12 @@ export async function startMarketWatcher(
           stopPrice,
           balance,
           now,
+          entryMeta: {
+            longScore,
+            shortScore,
+            entrySignal,
+            signal,
+          },
         });
 
         if (success) {

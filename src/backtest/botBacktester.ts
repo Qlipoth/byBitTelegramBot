@@ -277,6 +277,33 @@ async function runBotBacktest(params: BacktestRunParams) {
   console.log(`Net PnL: ${stats.pnlTotal.toFixed(2)} USD`);
   console.log(`Final Balance: ${stats.balance.toFixed(2)} USD`);
   console.log(`Max Drawdown: ${stats.maxDrawdown.toFixed(2)} USD`);
+  if (stats.closedTrades.length) {
+    console.log('---------------- TRADE DETAILS ----------------');
+    stats.closedTrades.forEach((trade, idx) => {
+      const opened = dayjs(trade.entryTime).format('YYYY-MM-DD HH:mm:ss');
+      const closed = dayjs(trade.exitTime).format('YYYY-MM-DD HH:mm:ss');
+      const pnlUsd = trade.pnlUsd.toFixed(2);
+      const pnlPct = trade.pnlPct.toFixed(2);
+      const pnlGrossUsd = trade.pnlGrossUsd.toFixed(2);
+      const pnlGrossPct = trade.pnlGrossPct.toFixed(2);
+      const feesUsd = trade.feesUsd.toFixed(2);
+      const entryPrice = trade.entryPrice.toFixed(4);
+      const exitPrice = trade.exitPrice.toFixed(4);
+      const qty = trade.qty.toFixed(4);
+      const longScore = trade.entryMeta?.longScore ?? null;
+      const shortScore = trade.entryMeta?.shortScore ?? null;
+      const scoreStr =
+        longScore !== null && shortScore !== null ? `L:${longScore} | S:${shortScore}` : 'n/a';
+      console.log(
+        `${idx + 1}. ${trade.symbol} ${trade.side} | Open:${opened} Close:${closed} | ` +
+          `Entry:${entryPrice} Exit:${exitPrice} Qty:${qty} | ` +
+          `Gross: ${pnlGrossUsd} USD (${pnlGrossPct}%) | Fees: ${feesUsd} USD | ` +
+          `Net: ${pnlUsd} USD (${pnlPct}%) | Reason: ${trade.reason} | Score: ${scoreStr}`
+      );
+    });
+  } else {
+    console.log('No trades were executed during this backtest window.');
+  }
 }
 
 (async () => {

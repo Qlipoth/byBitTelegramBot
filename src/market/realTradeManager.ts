@@ -4,6 +4,7 @@ import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
 import type { TradeExecutor, TradePosition } from './tradeExecutor.js';
+import type { OpenPositionParams } from './tradeExecutor.js';
 
 export interface ActivePosition {
   symbol: string;
@@ -241,13 +242,7 @@ export class RealTradeManager implements TradeExecutor {
   // ==========================================
   // 🚀 ОТКРЫТИЕ ПОЗИЦИИ (LIMIT + GTC)
   // ==========================================
-  async openPosition(params: {
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    price: number; // Цена из снапшота (текущая)
-    stopPrice: number;
-    balance: number;
-  }) {
+  async openPosition(params: OpenPositionParams) {
     const { symbol, side, price, stopPrice, balance } = params;
 
     if (!tradingState.isEnabled()) {

@@ -1,5 +1,12 @@
 export type TradeSide = 'LONG' | 'SHORT';
 
+export interface TradeEntryMeta {
+  longScore: number;
+  shortScore: number;
+  entrySignal?: string;
+  signal?: string;
+}
+
 export interface TradePosition {
   symbol: string;
   side: TradeSide;
@@ -8,6 +15,7 @@ export interface TradePosition {
   takeProfit: number;
   qty: number;
   entryTime: number;
+  entryMeta?: TradeEntryMeta;
 }
 
 export interface OpenPositionParams {
@@ -17,6 +25,7 @@ export interface OpenPositionParams {
   stopPrice: number;
   balance: number;
   now?: number;
+  entryMeta?: TradeEntryMeta;
 }
 
 export interface ClosePositionContext {

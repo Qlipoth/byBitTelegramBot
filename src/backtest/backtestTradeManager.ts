@@ -11,6 +11,9 @@ interface ClosedBacktestTrade extends TradePosition {
   exitTime: number;
   pnlUsd: number;
   pnlPct: number;
+  pnlGrossUsd: number;
+  pnlGrossPct: number;
+  feesUsd: number;
   reason: string;
 }
 
@@ -32,7 +35,7 @@ export class BacktestTradeManager implements TradeExecutor {
   constructor(options: BacktestTradeManagerOptions = {}) {
     this.initialBalance = options.initialBalance ?? 10_000;
     this.balance = this.initialBalance;
-    this.feePct = options.feePct ?? 0.0012; // 12 bps round-trip
+    this.feePct = options.feePct ?? 0.0011; // 11 bps round-trip (0.055% per side)
     this.rrRatio = options.rrRatio ?? 3;
   }
 
@@ -63,7 +66,7 @@ export class BacktestTradeManager implements TradeExecutor {
   }
 
   async openPosition(params: OpenPositionParams): Promise<boolean> {
-    const { symbol, side, price, stopPrice, balance } = params;
+    const { symbol, side, price, stopPrice, balance, entryMeta } = params;
 
     if (this.hasExposure(symbol)) return false;
     if (!Number.isFinite(stopPrice) || stopPrice <= 0) return false;
@@ -85,6 +88,7 @@ export class BacktestTradeManager implements TradeExecutor {
       takeProfit,
       qty,
       entryTime: params.now ?? Date.now(),
+      entryMeta: entryMeta!,
     };
 
     this.activePositions.set(symbol, position);
@@ -103,9 +107,11 @@ export class BacktestTradeManager implements TradeExecutor {
     const grossPnl = (exitPrice - existing.entryPrice) * direction * existing.qty;
     const notionalEntry = existing.entryPrice * existing.qty;
     const notionalExit = exitPrice * existing.qty;
-    const fee = (notionalEntry + notionalExit) * this.feePct;
+    const feePerSide = this.feePct / 2;
+    const fee = (notionalEntry + notionalExit) * feePerSide;
     const netPnl = grossPnl - fee;
     const pnlPct = (netPnl / notionalEntry) * 100;
+    const pnlGrossPct = (grossPnl / notionalEntry) * 100;
 
     this.balance += netPnl;
 
@@ -115,6 +121,9 @@ export class BacktestTradeManager implements TradeExecutor {
       exitTime,
       pnlUsd: netPnl,
       pnlPct,
+      pnlGrossUsd: grossPnl,
+      pnlGrossPct,
+      feesUsd: fee,
       reason,
     });
 
