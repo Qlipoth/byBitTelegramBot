@@ -32,14 +32,14 @@ export const CONFIG = {
   COOLDOWN_DURATION: 0, // пауза после выхода выключена
   // Максимальное время в сделке для ФЛЕТА (Range)
   // Во флете нам важно быстро зайти и выйти, пока цена не пробила канал.
-  MAX_RANGE_HOLD: 15 * 60 * 1000, // 15 минут
+  MAX_RANGE_HOLD: 15 * 60 * 1000, // 25 минут
 
   // Максимальное время в сделке для ТРЕНДА (Trend/Accumulation)
   // В тренде мы даем позиции "подышать", чтобы забрать большое движение.
-  MAX_TREND_HOLD: 60 * 60 * 1000, // 60 минут (1 час)
+  MAX_TREND_HOLD: 90 * 60 * 1000, // 90 минут
 
   // Общий лимит на случай, если фаза не определена
-  MAX_POSITION_DURATION: 30 * 60 * 1000, // 30 минут
+  MAX_POSITION_DURATION: 45 * 60 * 1000, // 45 минут
 };
 
 export function createFSM(): FSMContext {
@@ -171,8 +171,6 @@ export function shouldExitPosition({
   fsm,
   phase,
   snapshot,
-  atr,
-  csi,
   now,
   entryPrice,
   longScore,
@@ -181,8 +179,6 @@ export function shouldExitPosition({
   fsm: FSMContext;
   phase: string;
   snapshot: MarketSnapshot;
-  atr: number;
-  csi: number;
   now: number;
   entryPrice: number;
   longScore: number;
@@ -191,82 +187,47 @@ export function shouldExitPosition({
   if (fsm.state !== 'OPEN' || !fsm.side) return { exit: false, reason: 'NONE' };
 
   const currentPrice = snapshot.price;
-  const fundingRate = Number(snapshot.fundingRate || 0);
   const cvd3m = typeof snapshot.cvd3m === 'number' ? snapshot.cvd3m : 0;
-  const fallbackThresholds = {
-    moveThreshold: BASE_IMPULSE_THRESHOLDS.PRICE_SURGE_PCT,
-    cvdThreshold: BASE_IMPULSE_THRESHOLDS.VOLUME_HIGH_PCT,
-  };
-  const thresholds = snapshot.thresholds ?? fallbackThresholds;
-  const moveThreshold = thresholds.moveThreshold ?? fallbackThresholds.moveThreshold;
-  const cvdThreshold = thresholds.cvdThreshold ?? fallbackThresholds.cvdThreshold;
-
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
   const timeInPosition = now - (fsm.openedAt || 0);
 
-  // 1. ДИНАМИЧЕСКИЕ ПОРОГИ (Вместо статичных EXIT_THRESHOLDS)
-  //const atrPct = atr > 0 ? (atr / currentPrice) * 100 : 0;
-  //const dynamicStopLoss = Math.max(atrPct * 1.5, moveThreshold, EXIT_THRESHOLDS.STOP_LOSS_PCT);
-  const dynamicStopLoss = Math.max(moveThreshold, EXIT_THRESHOLDS.STOP_LOSS_PCT);
+  // 1. ЖЕСТКИЙ СТОП-ЛОСС (из конфига)
+  if (pnlPct <= -EXIT_THRESHOLDS.STOP_LOSS_PCT) return { exit: true, reason: 'STOP_LOSS' };
 
-  // Динамический стоп-лосс: если ATR вырос, даем позиции больше "дышать"
-  // Но не меньше твоего базового стопа
-  if (pnlPct <= -dynamicStopLoss) {
-    return { exit: true, reason: 'STOP_LOSS' };
+  // 2. ЗАЩИТА ПРИБЫЛИ ПО СИГНАЛУ (Вместо maxReachedPnl)
+  // Если профит уже > 0.4%, и сигнал (Score) упал ниже 50 — выходим.
+  // Это не даст сделке сползти из плюса в минус.
+  const currentScore = fsm.side === 'LONG' ? longScore : shortScore;
+  // if (pnlPct > 0.4 && currentScore < 50) {
+  //   return { exit: true, reason: 'TAKE_PROFIT_SIGNAL_WEAK' };
+  // }
+
+  // 3. ЭКСТРЕННЫЙ ВЫХОД ПО CVD (Реальные деньги против нас)
+  // Если мы в просадке и видим агрессивный CVD в обратную сторону (1.5 млн за 3 мин)
+
+  const cvdReversal = 2500000;
+  if (timeInPosition > 30 * 60 * 1000 && pnlPct < 0) {
+    if (fsm.side === 'LONG' && cvd3m < -cvdReversal) return { exit: true, reason: 'CVD_REVERSAL' };
+    if (fsm.side === 'SHORT' && cvd3m > cvdReversal) return { exit: true, reason: 'CVD_REVERSAL' };
   }
 
-  // В shouldExitPosition замени условие Blow-off:
-  if (phase === 'blowoff' && pnlPct > moveThreshold) {
-    // Выходим, если профит больше, чем типичный импульс этой монеты
-    return { exit: true, reason: 'BLOWOFF' };
-  }
+  // if (fsm.side === 'LONG' && longScore < 65) return { exit: true, reason: 'CVD_REVERSAL' };
+  // if (fsm.side === 'SHORT' && shortScore < 65) return { exit: true, reason: 'CVD_REVERSAL' };
 
-  const isMicroProfit = pnlPct > 0 && pnlPct < 0.2; // Фиксированный порог "шумового" профита
-  const cvdMomentum = cvdThreshold > 0 ? cvd3m / cvdThreshold : 0;
-
-  // Если профит копеечный, игнорируем мелкие развороты CVD, даем цене шанс
-  if (isMicroProfit && Math.abs(cvdMomentum) < 0.2) {
-    return { exit: false, reason: 'NONE' };
-  }
-
-  // Защита от дорогого фандинга (оставляем как было)
-  if (fsm.side === 'LONG' && fundingRate > 0.0005) return { exit: true, reason: 'FUNDING' };
-  if (fsm.side === 'SHORT' && fundingRate < -0.0005) return { exit: true, reason: 'FUNDING' };
-
-  // 4. ДИНАМИЧЕСКИЙ РЕВЕРС CVD
-  // Выходим, если против нас за 3 минуты налили больше 2-х норм аномального объема
-  const dynamicCvdReversal = cvdThreshold * 2;
-  const isCvdOpposed =
-    fsm.side === 'LONG' ? cvd3m < -dynamicCvdReversal : cvd3m > dynamicCvdReversal;
-
-  if (timeInPosition > 60_000 && isCvdOpposed) {
-    // Доп. проверка: действительно ли свеча против нас "полная"?
-    if (
-      (fsm.side === 'LONG' && cvdMomentum < -0.5) ||
-      (fsm.side === 'SHORT' && cvdMomentum > 0.5)
-    ) {
-      return { exit: true, reason: 'CVD_REVERSAL' };
-    }
-  }
-
-  // 5. ТЕЙК-ПРОФИТ С ЗАТУХАНИЕМ
-  if (pnlPct >= EXIT_THRESHOLDS.TAKE_PROFIT_PCT) {
-    const currentScore = fsm.side === 'LONG' ? longScore : shortScore;
-    // Если импульс выдохся (CSI близок к 0) и баллы упали — забираем профит
-    if (Math.abs(cvdMomentum) < 0.1 || currentScore < 40) {
-      return { exit: true, reason: 'TAKE_PROFIT_SIGNAL_WEAK' };
-    }
-  }
-
-  // 6. СЛОМ СТРУКТУРЫ (Реверс баллов — без изменений)
-  if ((fsm.side === 'LONG' && shortScore > 75) || (fsm.side === 'SHORT' && longScore > 75)) {
-    return { exit: true, reason: 'STRUCTURE_REVERSAL' };
-  }
-
-  // 7. ТАЙМАУТ (Защита от залипания)
-  const maxTime = phase === 'range' ? 10 * 60000 : 30 * 60000; // 10м для ренджа, 30м для тренда
-  if (timeInPosition > maxTime && pnlPct < 0.1) {
+  // 4. ВЫХОД ПО ТАЙМАУТУ (Мягкий стагнация-фильтр)
+  // Если за 30 минут не ушли в нормальный плюс (> 0.2%), закрываем вялую позицию.
+  if (timeInPosition > 30 * 60 * 1000 && pnlPct < 0.2) {
     return { exit: true, reason: 'TIMEOUT' };
+  }
+
+  // 5. ТЕЙК-ПРОФИТ (Твоя логика)
+  if (pnlPct >= EXIT_THRESHOLDS.TAKE_PROFIT_PCT) {
+    if (currentScore < 45) return { exit: true, reason: 'TAKE_PROFIT_SIGNAL_WEAK' };
+  }
+
+  // 6. BLOWOFF (Быстрый заброс)
+  if (phase === 'blowoff' && pnlPct > 0.7) {
+    return { exit: true, reason: 'BLOWOFF' };
   }
 
   return { exit: false, reason: 'NONE' };

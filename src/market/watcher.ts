@@ -206,9 +206,7 @@ export async function startMarketWatcher(
     };
   };
   const ensureSnapshotThresholds = (snap: MarketSnapshot): SnapshotWithThresholds => {
-    if (!snap.thresholds) {
-      snap.thresholds = buildThresholds();
-    }
+    snap.thresholds = { ...(snap.thresholds ?? {}), ...buildThresholds() };
     return snap as SnapshotWithThresholds;
   };
 
@@ -494,8 +492,6 @@ export async function startMarketWatcher(
           ? shouldExitPosition({
               fsm,
               snapshot: snap,
-              atr,
-              csi,
               now,
               entryPrice: currentPos.entryPrice, // Берем реальную цену входа
               longScore,

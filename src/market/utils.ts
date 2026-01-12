@@ -99,13 +99,24 @@ export function calculateEntryScores({
   const oi15 = delta15m?.oiChangePct ?? 0;
   const isDataMature = (delta30m?.minutesAgo ?? 0) >= 15;
 
-  const oiLong =
+  let oiLong =
     (isDataMature ? Math.log1p(Math.max(oi30, 0)) * 10 : 0) + Math.log1p(Math.max(oi15, 0)) * 10;
-  const oiShort =
+  let oiShort =
     (isDataMature ? Math.log1p(Math.max(-oi30, 0)) * 10 : 0) + Math.log1p(Math.max(-oi15, 0)) * 10;
+
+  // Если OI падает (меньше нуля), мы вычитаем баллы из обоих направлений,
+  // потому что падение OI — это выход игроков (ликвидации/фиксация), а не новый импульс.
+  if (oi15 < 0) {
+    const penalty = 15;
+    oiLong -= penalty;
+    oiShort -= penalty;
+    // Можно добавить лог, чтобы видеть это в консоли
+    console.log(`[OI_PENALTY] OI is falling (${oi15.toFixed(2)}%), reducing confidence`);
+  }
 
   const oiLongBonus = Math.min(oiLong, 25);
   const oiShortBonus = Math.min(oiShort, 25);
+
   awardScore('LONG', oiLongBonus, 'OI', `oi30=${oi30.toFixed(2)} oi15=${oi15.toFixed(2)}`);
   awardScore('SHORT', oiShortBonus, 'OI', `oi30=${oi30.toFixed(2)} oi15=${oi15.toFixed(2)}`);
   details.oi = Math.round(Math.max(oiLongBonus, oiShortBonus));
@@ -120,6 +131,11 @@ export function calculateEntryScores({
   if (fRate > 0.0001) {
     awardScore('SHORT', 10, 'FUNDING', `fundingRate=${fRate}`);
   }
+  if (fRate < -0.0004) {
+    awardScore('LONG', 5, 'FUNDING_EXTREME', `fundingRate=${fRate}`);
+  } else if (fRate > 0.0004) {
+    awardScore('SHORT', 5, 'FUNDING_EXTREME', `fundingRate=${fRate}`);
+  }
   details.funding = fRate === 0 ? 0 : 10;
 
   /* =====================
@@ -133,25 +149,27 @@ export function calculateEntryScores({
 
   const cvd15Norm = Math.min(Math.abs(cvd15m) / dynamicCvd15Threshold, 1);
   const cvd3Norm = Math.min(Math.abs(cvd3m) / dynamicCvd3Threshold, 1);
+  const cvd15Active = Math.abs(cvd15m) >= dynamicCvd15Threshold * 0.5;
+  const cvd3Active = Math.abs(cvd3m) >= dynamicCvd3Threshold * 0.5;
 
-  if (cvd15m > 0) {
-    const bonus = cvd15Norm * 15;
+  if (cvd15Active && cvd15m > 0) {
+    const bonus = cvd15Norm * 10;
     awardScore('LONG', bonus, 'CVD15', `cvd15m=${cvd15m.toFixed(0)}`);
   }
-  if (cvd15m < 0) {
-    const bonus = cvd15Norm * 15;
+  if (cvd15Active && cvd15m < 0) {
+    const bonus = cvd15Norm * 10;
     awardScore('SHORT', bonus, 'CVD15', `cvd15m=${cvd15m.toFixed(0)}`);
   }
 
-  if (cvd3m > 0) {
-    const bonus = cvd3Norm * 10;
+  if (cvd3Active && cvd3m > 0) {
+    const bonus = cvd3Norm * 7;
     awardScore('LONG', bonus, 'CVD3', `cvd3m=${cvd3m.toFixed(0)}`);
   }
-  if (cvd3m < 0) {
-    const bonus = cvd3Norm * 10;
+  if (cvd3Active && cvd3m < 0) {
+    const bonus = cvd3Norm * 7;
     awardScore('SHORT', bonus, 'CVD3', `cvd3m=${cvd3m.toFixed(0)}`);
   }
-  details.cvd = Math.round(cvd15Norm * 15 + cvd3Norm * 10);
+  details.cvd = Math.round((cvd15Active ? cvd15Norm * 10 : 0) + (cvd3Active ? cvd3Norm * 7 : 0));
 
   /* =====================
    5️⃣ Impulse & Velocity (АДАПТИРОВАНО)
@@ -211,6 +229,11 @@ export function calculateEntryScores({
   if (rsi <= 45) {
     awardScore('SHORT', 5, 'RSI', `rsi=${rsi.toFixed(2)}`);
   }
+  if (rsi >= 70) {
+    awardScore('SHORT', 7, 'RSI_EXTREME', `rsi=${rsi.toFixed(2)}`);
+  } else if (rsi <= 30) {
+    awardScore('LONG', 7, 'RSI_EXTREME', `rsi=${rsi.toFixed(2)}`);
+  }
   if (isBull) {
     awardScore('LONG', 5, 'TREND', 'isBull=true');
   }
@@ -219,6 +242,14 @@ export function calculateEntryScores({
   }
   details.rsi = (rsi >= 55 ? 5 : 0) + (rsi <= 45 ? 5 : 0);
   details.trend = (isBull ? 5 : 0) + (isBear ? 5 : 0);
+
+  // 1. Защита от "падающего ножа" (Убивает убыток сделки №12)
+  // Если цена за 5 минут упала в 3 раза сильнее, чем обычный импульс — это обвал, а не разворот.
+  const knifeThreshold = impulse.PRICE_SURGE_PCT * 3;
+  if (longScore > 0 && price5m < -knifeThreshold) {
+    longScore -= 30; // Сбрасываем скор, чтобы не войти
+    console.log(`[SAFETY] Falling knife detected (5m: ${price5m.toFixed(2)}%), penalty -30`);
+  }
 
   // Clamp
   longScore = Math.min(100, Math.round(longScore));
@@ -247,6 +278,19 @@ export function getSignalAgreement({
   rsi,
   symbol,
 }: SignalAgreementParams) {
+  const isSol = symbol === SYMBOLS.SOL;
+  const tuning = {
+    minLongScore: MIN_SCORE + (isSol ? 4 : 0),
+    minShortScore: MIN_SCORE + (isSol ? 4 : 0),
+    trendScoreGap: isSol ? 12 : 7,
+    breakoutScoreGap: isSol ? 12 : 9,
+    trendMoveFactor: isSol ? 0.9 : 0.5,
+    breakoutMoveFactor: isSol ? 1.0 : 0.8,
+    minLongRsi: isSol ? 55 : 50,
+    maxShortRsi: isSol ? 45 : 50,
+    trendCvdFactor: isSol ? 0.6 : 0,
+    breakoutCvdFactor: isSol ? 0.8 : 1,
+  };
   const csi = getCSI(symbol); // Получаем индекс силы
 
   // 1. Для пробоев и накопления нам нужен ИМПУЛЬС (CSI выше 0.25)
@@ -277,12 +321,12 @@ export function getSignalAgreement({
   if (phase === 'trend') {
     // LONG continuation
     if (
-      longScore >= MIN_SCORE &&
-      longScore - shortScore >= 7 &&
-      rsi >= 50 &&
+      longScore >= tuning.minLongScore &&
+      longScore - shortScore >= tuning.trendScoreGap &&
+      rsi >= tuning.minLongRsi &&
       pricePercentChange > 0 &&
-      Math.abs(pricePercentChange) >= moveThreshold * 0.5 &&
-      cvd15m > 0 &&
+      Math.abs(pricePercentChange) >= moveThreshold * tuning.trendMoveFactor &&
+      cvd15m > cvdThreshold * tuning.trendCvdFactor &&
       fundingRate <= 0.00025
     ) {
       console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION LONG`);
@@ -291,12 +335,12 @@ export function getSignalAgreement({
 
     // SHORT continuation
     if (
-      shortScore >= MIN_SCORE &&
-      shortScore - longScore >= 7 &&
-      rsi <= 50 &&
+      shortScore >= tuning.minShortScore &&
+      shortScore - longScore >= tuning.trendScoreGap &&
+      rsi <= tuning.maxShortRsi &&
       pricePercentChange < 0 &&
-      Math.abs(pricePercentChange) >= moveThreshold * 0.5 &&
-      cvd15m < 0 &&
+      Math.abs(pricePercentChange) >= moveThreshold * tuning.trendMoveFactor &&
+      cvd15m < -cvdThreshold * tuning.trendCvdFactor &&
       fundingRate >= -0.00025
     ) {
       console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION SHORT`);
@@ -308,7 +352,7 @@ export function getSignalAgreement({
   // 3️⃣ BREAKOUT / EXPANSION ENTRY
   // =====================
   if (phase === 'trend' || phase === 'accumulation' || phase === 'distribution') {
-    if (Math.abs(pricePercentChange) < moveThreshold * 0.8) {
+    if (Math.abs(pricePercentChange) < moveThreshold * tuning.breakoutMoveFactor) {
       console.log(
         `[SIGNAL_AGREEMENT] Price change ${pricePercentChange}% < moveThreshold ${moveThreshold}%, returning NONE`
       );
@@ -316,9 +360,9 @@ export function getSignalAgreement({
     }
 
     if (
-      longScore >= MIN_SCORE + 3 &&
-      longScore - shortScore >= 9 &&
-      cvd15m > cvdThreshold &&
+      longScore >= tuning.minLongScore + 3 &&
+      longScore - shortScore >= tuning.breakoutScoreGap &&
+      cvd15m > cvdThreshold * tuning.breakoutCvdFactor &&
       fundingRate <= 0.0002
     ) {
       console.log(`[SIGNAL_AGREEMENT] BREAKOUT LONG`);
@@ -326,9 +370,9 @@ export function getSignalAgreement({
     }
 
     if (
-      shortScore >= MIN_SCORE + 3 &&
-      shortScore - longScore >= 9 &&
-      cvd15m < -cvdThreshold &&
+      shortScore >= tuning.minShortScore + 3 &&
+      shortScore - longScore >= tuning.breakoutScoreGap &&
+      cvd15m < -cvdThreshold * tuning.breakoutCvdFactor &&
       fundingRate >= -0.0002
     ) {
       console.log(`[SIGNAL_AGREEMENT] BREAKOUT SHORT`);
@@ -341,9 +385,9 @@ export function getSignalAgreement({
   // =====================
   if (phase === 'range') {
     if (
-      longScore >= MIN_SCORE + 5 &&
+      longScore >= tuning.minLongScore + 5 &&
       longScore - shortScore >= 20 &&
-      rsi >= 55 &&
+      rsi >= Math.max(tuning.minLongRsi, 55) &&
       Math.abs(pricePercentChange) >= moveThreshold * 0.3 &&
       Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m > 0
@@ -353,9 +397,9 @@ export function getSignalAgreement({
     }
 
     if (
-      shortScore >= MIN_SCORE + 5 &&
+      shortScore >= tuning.minShortScore + 5 &&
       shortScore - longScore >= 20 &&
-      rsi <= 45 &&
+      rsi <= Math.min(tuning.maxShortRsi, 45) &&
       Math.abs(pricePercentChange) >= moveThreshold * 0.3 &&
       Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m < 0
@@ -375,71 +419,75 @@ export function confirmEntry({
   signal,
   delta,
   cvd3m,
-  impulse,
   phase,
   confirmedAt,
 }: ConfirmEntryParams): boolean {
-  if (!delta || !impulse || cvd3m === undefined) {
-    console.warn(`[CONFIRM_ENTRY] Missing data for confirmation`);
-    return false;
-  }
+  // 1. ПРОВЕРКА НАЛИЧИЯ ДАННЫХ
+  if (!delta || cvd3m === undefined) return false;
 
   const pChange = delta.priceChangePct;
+  const absPChange = Math.abs(pChange);
 
   /**
-   * Коэффициент чувствительности подтверждения:
-   * В тренде (trend) берем 0.35 от порога, в остальных фазах — 0.2.
-   * Дополнительно не опускаемся ниже 15% базового порога, чтобы совсем не ловить шум.
+   * 2. ДИНАМИЧЕСКИЕ ПОРОГИ ДЛЯ ETH (Очищено от impulse)
+   * Для 1-минутной свечи ETH:
+   * - 0.2% - это начало движения
+   * - 0.45% - это уже "ракета", в которую поздно прыгать
    */
-  const sensitivity = phase === 'trend' ? 0.35 : 0.2;
-  const minMove = Math.max(impulse.PRICE_SURGE_PCT * sensitivity, impulse.PRICE_SURGE_PCT * 0.15);
-  const cvdTolerance = impulse.VOL_SURGE_CVD * 0.25;
+  const MIN_MOVE = phase === 'trend' ? 0.22 : 0.18; // В тренде ждем чуть больше силы
+  const MAX_MOVE = 0.5; // ANTI-FOMO лимит: не заходим на пике палки
 
-  // Логика подтверждения для LONG
+  /**
+   * 3. РЕАЛЬНЫЕ ПОРОГИ CVD ДЛЯ ETH (в USDT)
+   * На ETHUSDT нормальный минутный импульс — это 800k - 1.5M USDT.
+   * Если cvd3m меньше 500k — это "пустое" движение роботов.
+   */
+  const MIN_CVD = phase === 'trend' ? 600000 : 500000;
+
+  /**
+   * 4. ПЛОТНОСТЬ (КАЧЕСТВО ДВИЖЕНИЯ)
+   * Сколько долларов CVD приходится на 1% движения.
+   * Если цена летит, а CVD стоит — это ловушка.
+   */
+  const currentDensity = Math.abs(cvd3m / (pChange || 0.001));
+  const MIN_DENSITY = 1500000; // Минимум 2.5 млн USDT на каждый 1% движения
+
+  let confirmed = false;
+
+  // Логика подтверждения LONG
   if (signal === 'LONG') {
-    // 1. Цена за последнюю минуту должна пройти хотя бы minMove
-    // 2. CVD за последние 3 минуты должен быть не ниже небольшого отрицательного допуска
-    const confirmed = pChange > minMove && cvd3m > -cvdTolerance;
-
-    if (confirmed) {
-      const timeLabel = confirmedAt ? dayjs(confirmedAt).format('YYYY-MM-DD HH:mm:ss') : 'n/a';
-      console.log(
-        `[CONFIRM_ENTRY] ✅ LONG CONFIRMED @ ${timeLabel} | Phase: ${phase} | pChange: ${pChange.toFixed(
-          3
-        )}% > minMove: ${minMove.toFixed(3)}% | cvd3m: ${cvd3m.toFixed(
-          0
-        )} > -tol:${cvdTolerance.toFixed(0)}`
-      );
-    }
-    return confirmed;
+    confirmed =
+      pChange >= MIN_MOVE && // Цена выросла достаточно
+      pChange <= MAX_MOVE && // Но еще не улетела в космос (Anti-FOMO)
+      cvd3m >= MIN_CVD && // Покупатели реально давят (минимум 600k-1M)
+      currentDensity >= MIN_DENSITY; // Движение подтверждено плотным объемом
   }
 
-  // Логика подтверждения для SHORT
+  // Логика подтверждения SHORT
   if (signal === 'SHORT') {
-    // 1. Цена за последнюю минуту должна упасть ниже -minMove
-    // 2. CVD за последние 3 минуты должен быть не выше небольшого положительного допуска
-    const confirmed = pChange < -minMove && cvd3m < cvdTolerance;
-
-    if (confirmed) {
-      const timeLabel = confirmedAt ? dayjs(confirmedAt).format('YYYY-MM-DD HH:mm:ss') : 'n/a';
-      console.log(
-        `[CONFIRM_ENTRY] ✅ SHORT CONFIRMED @ ${timeLabel} | Phase: ${phase} | pChange: ${pChange.toFixed(
-          3
-        )}% < -minMove: -${minMove.toFixed(3)}% | cvd3m: ${cvd3m.toFixed(
-          0
-        )} < tol:${cvdTolerance.toFixed(0)}`
-      );
-    }
-    return confirmed;
+    confirmed =
+      pChange <= -MIN_MOVE && // Цена упала достаточно
+      pChange >= -MAX_MOVE && // Но не слишком (Anti-FOMO)
+      cvd3m <= -MIN_CVD && // Продавцы реально давят
+      currentDensity >= MIN_DENSITY;
   }
 
-  return false;
+  // ЛОГИРОВАНИЕ (поможет понять, почему сделка НЕ открылась)
+  if (absPChange >= 0.15) {
+    // Логируем только значимые попытки
+    console.log(
+      `[CONFIRM] ${signal} | PNL: ${pChange.toFixed(3)}% | CVD: ${(cvd3m / 1000000).toFixed(2)}M | ` +
+        `Dense: ${(currentDensity / 1000000).toFixed(1)} | Res: ${confirmed ? '✅' : '❌'}`
+    );
+  }
+
+  return confirmed;
 }
 
 const MARKET_SETTINGS = {
   // Для тяжелых монет (BTC, ETH)
   LIQUID: {
-    moveThreshold: 0.3, // Малое движение уже тренд
+    moveThreshold: 0.6, // Малое движение уже тренд
     cvdThreshold: 8000, // Нужен заметный, но не экстремальный поток капитала
     oiThreshold: 0.15, // Более мягкий порог для фиксирования набора позиций
   },
@@ -457,26 +505,43 @@ const MARKET_SETTINGS = {
   },
 };
 
+const COIN_THRESHOLD_OVERRIDES: Partial<
+  Record<
+    SymbolValue,
+    {
+      moveThreshold: number;
+      cvdThreshold: number;
+      oiThreshold: number;
+    }
+  >
+> = {
+  [SYMBOLS.SOL]: {
+    moveThreshold: 0.45,
+    cvdThreshold: 4500,
+    oiThreshold: 0.5,
+  },
+};
+
 /**
  * Определяет категорию монеты и возвращает соответствующие пороги
  */
 export function selectCoinThresholds(symbol: SymbolValue) {
-  // 2. Определяем списки (их можно расширять)
-  const liquidCoins = new Set<SymbolValue>([SYMBOLS.BTC, SYMBOLS.ETH, SYMBOLS.SOL]);
-  const mediumLiquidCoins = new Set<SymbolValue>([SYMBOLS.XRP, SYMBOLS.PIPPIN, SYMBOLS.BEAT]);
+  const override = COIN_THRESHOLD_OVERRIDES[symbol];
+  if (override) {
+    return override;
+  }
 
-  // 3. Логика выбора
-  // Самые ликвидные
+  const liquidCoins = new Set<SymbolValue>([SYMBOLS.BTC, SYMBOLS.ETH]);
+  const volatileCoins = new Set<SymbolValue>([SYMBOLS.XRP, SYMBOLS.PIPPIN, SYMBOLS.BEAT]);
+
   if (liquidCoins.has(symbol)) {
     return MARKET_SETTINGS.LIQUID;
   }
 
-  // Самые волатильные (шиткоины/мемкоины)
-  if (mediumLiquidCoins.has(symbol)) {
+  if (volatileCoins.has(symbol)) {
     return MARKET_SETTINGS.VOLATILE;
   }
 
-  // Все остальное (SOL, XRP, ADA, DOT и т.д.) по умолчанию — MEDIUM
   return MARKET_SETTINGS.MEDIUM;
 }
 

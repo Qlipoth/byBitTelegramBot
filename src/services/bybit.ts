@@ -2,6 +2,7 @@ import { RestClientV5, WebsocketClient } from 'bybit-api';
 import type { MarketSnapshot } from '../market/types.js';
 import { PRIORITY_COINS, SYMBOL_BLACKLIST } from '../market/constants.market.js';
 import { initCVDTracker } from '../market/cvdTracker.js';
+import { buildSyntheticCvdSeries, getCvdDifference } from '../backtest/cvdBuilder.js';
 
 import * as dotenv from 'dotenv';
 import dayjs from 'dayjs';
@@ -36,6 +37,206 @@ export const ws = new WebsocketClient({
 });
 
 initCVDTracker(ws);
+
+const ONE_MINUTE_MS = 60_000;
+const DEFAULT_HISTORY_MINUTES = 60 * 24 * 130; // ~90 дней
+const MIN_HISTORY_MINUTES = 30;
+const MAX_HISTORY_MINUTES = 60 * 24 * 60; // 60 дней
+const MAX_KLINE_BATCH = 200; // Bybit v5 limit
+const MAX_OI_BATCH = 200;
+const MAX_FUNDING_BATCH = 200;
+
+type CandlePoint = {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  turnover: number;
+};
+
+type OiPoint = {
+  timestamp: number;
+  openInterest: number;
+};
+
+type FundingPoint = {
+  timestamp: number;
+  fundingRate: number;
+};
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchKlinesRange(symbol: string, startTime: number, endTime: number) {
+  const candles: CandlePoint[] = [];
+  const step = ONE_MINUTE_MS;
+  let cursor = Math.floor(startTime / step) * step;
+
+  while (cursor <= endTime) {
+    const resp = await bybitClient.getKline({
+      category: 'linear',
+      symbol,
+      interval: '1',
+      start: cursor,
+      limit: MAX_KLINE_BATCH,
+    } as any);
+
+    const list = resp?.result?.list ?? [];
+    if (!list.length) {
+      break;
+    }
+
+    const batch = list
+      .map((row: string[]) => ({
+        timestamp: Number(row[0]),
+        open: Number(row[1]),
+        high: Number(row[2]),
+        low: Number(row[3]),
+        close: Number(row[4]),
+        volume: Number(row[5]),
+        turnover: Number(row[6] ?? 0),
+      }))
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    candles.push(...batch);
+    console.log(
+      `[PRELOAD] ${symbol}: fetched ${batch.length} candles (total ${candles.length}) up to ${new Date(
+        batch.at(-1)?.timestamp ?? cursor
+      ).toISOString()}`
+    );
+
+    const lastTimestamp = batch.at(-1)?.timestamp;
+    if (!lastTimestamp || lastTimestamp <= cursor) {
+      break;
+    }
+
+    cursor = lastTimestamp + step;
+    if (cursor > endTime) {
+      break;
+    }
+
+    if (batch.length < MAX_KLINE_BATCH) {
+      break;
+    }
+
+    await sleep(150);
+  }
+
+  const deduped = Array.from(new Map(candles.map(c => [c.timestamp, c])).values());
+  return deduped
+    .filter(c => c.timestamp >= startTime && c.timestamp <= endTime)
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+async function fetchOpenInterestRange(symbol: string, startTime: number, endTime: number) {
+  const points: OiPoint[] = [];
+  let cursor: string | undefined;
+
+  while (true) {
+    const resp = await bybitClient.getOpenInterest({
+      category: 'linear',
+      symbol,
+      intervalTime: '5min',
+      limit: MAX_OI_BATCH,
+      startTime,
+      endTime,
+      ...(cursor ? { cursor } : {}),
+    } as any);
+
+    const list = resp?.result?.list ?? [];
+    if (!list.length) break;
+
+    const batch = list
+      .map((item: any) => ({
+        timestamp: Number(item.timestamp),
+        openInterest: Number(item.openInterest),
+      }))
+      .filter(p => p.timestamp >= startTime && p.timestamp <= endTime);
+
+    points.push(...batch);
+
+    const next = resp?.result?.nextPageCursor;
+    if (!next || next === cursor) break;
+    cursor = next;
+    if (batch.length < MAX_OI_BATCH) break;
+    await sleep(150);
+  }
+
+  if (!points.length) {
+    const fallback = await bybitClient.getOpenInterest({
+      category: 'linear',
+      symbol,
+      intervalTime: '5min',
+      limit: 6,
+    });
+    const list = fallback?.result?.list ?? [];
+    points.push(
+      ...list.map((item: any) => ({
+        timestamp: Number(item.timestamp),
+        openInterest: Number(item.openInterest),
+      }))
+    );
+  }
+
+  const deduped = Array.from(new Map(points.map(p => [p.timestamp, p])).values());
+  return deduped.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+async function fetchFundingHistoryRange(symbol: string, startTime: number, endTime: number) {
+  const points: FundingPoint[] = [];
+  let cursor: string | undefined;
+
+  while (true) {
+    const resp = await bybitClient.getFundingRateHistory({
+      category: 'linear',
+      symbol,
+      limit: MAX_FUNDING_BATCH,
+      startTime,
+      endTime,
+      ...(cursor ? { cursor } : {}),
+    } as any);
+
+    const list = resp?.result?.list ?? [];
+    if (!list.length) break;
+
+    const batch = list
+      .map((item: any) => ({
+        timestamp: Number(item.fundingTime ?? item.timestamp),
+        fundingRate: Number(item.fundingRate),
+      }))
+      .filter(p => p.timestamp >= startTime && p.timestamp <= endTime);
+
+    points.push(...batch);
+
+    const next = (resp as any)?.result?.nextPageCursor ?? (resp as any)?.result?.cursor;
+
+    if (!next || next === cursor) break;
+    cursor = next;
+    if (batch.length < MAX_FUNDING_BATCH) break;
+    await sleep(150);
+  }
+
+  if (!points.length) {
+    const fallback = await bybitClient.getFundingRateHistory({
+      category: 'linear',
+      symbol,
+      limit: 1,
+    });
+    const list = fallback?.result?.list ?? [];
+    points.push(
+      ...list.map((item: any) => ({
+        timestamp: Number(item.fundingTime ?? item.timestamp ?? Date.now()),
+        fundingRate: Number(item.fundingRate),
+      }))
+    );
+  }
+
+  const deduped = Array.from(new Map(points.map(p => [p.timestamp, p])).values());
+  return deduped.sort((a, b) => a.timestamp - b.timestamp);
+}
 
 export async function getMarketSnapshot(symbol: string): Promise<MarketSnapshot> {
   try {
@@ -117,7 +318,9 @@ export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]>
     // Filter and sort all USDT pairs by turnover (quote volume) to avoid bias toward low-priced coins
     const allUsdtPairs = response.result.list
       .filter(ticker => ticker.symbol.endsWith('USDT'))
-      .filter(ticker => !SYMBOL_BLACKLIST.includes(ticker.symbol as (typeof SYMBOL_BLACKLIST)[number]))
+      .filter(
+        ticker => !SYMBOL_BLACKLIST.includes(ticker.symbol as (typeof SYMBOL_BLACKLIST)[number])
+      )
       .sort((a, b) => parseFloat(b.turnover24h) - parseFloat(a.turnover24h));
 
     // Get priority symbols that exist in the response
@@ -147,57 +350,81 @@ export async function getTopLiquidSymbols(limit: number = 30): Promise<string[]>
   }
 }
 
-export async function preloadMarketSnapshots(symbol: string): Promise<MarketSnapshot[]> {
-  // 1️⃣ Загружаем всё параллельно
-  const [klines, oiHistory, funding] = await Promise.all([
-    bybitClient.getKline({
+type PreloadRangeOptions = {
+  minutes?: number;
+  startTime?: number;
+  endTime?: number;
+};
+
+export async function preloadMarketSnapshots(
+  symbol: string,
+  options?: PreloadRangeOptions
+): Promise<MarketSnapshot[]> {
+  let startTime: number;
+  let endTime: number;
+
+  if (options?.startTime && options?.endTime) {
+    if (options.startTime >= options.endTime) {
+      throw new Error('[PRELOAD] startTime must be less than endTime');
+    }
+    startTime = Math.floor(options.startTime);
+    endTime = Math.floor(options.endTime);
+  } else {
+    endTime = Date.now();
+    const requestedMinutes = options?.minutes ?? DEFAULT_HISTORY_MINUTES;
+    const historyMinutes = Math.min(
+      Math.max(Math.floor(requestedMinutes), MIN_HISTORY_MINUTES),
+      MAX_HISTORY_MINUTES
+    );
+    startTime = endTime - historyMinutes * ONE_MINUTE_MS;
+  }
+
+  const [ticker] = await Promise.all([
+    bybitClient.getTickers({
       category: 'linear',
       symbol,
-      interval: '1',
-      limit: 30,
-    }),
-    bybitClient.getOpenInterest({
-      category: 'linear',
-      symbol,
-      intervalTime: '5min',
-      limit: 6, // ~30 минут
-    }),
-    bybitClient.getFundingRateHistory({
-      category: 'linear',
-      symbol,
-      limit: 1,
     }),
   ]);
 
-  if (
-    !klines?.result?.list?.length ||
-    !oiHistory?.result?.list?.length ||
-    !funding?.result?.list?.length
-  ) {
-    throw new Error(`[PRELOAD] Failed to load history for ${symbol}`);
+  if (!ticker?.result?.list?.length) {
+    throw new Error(`[PRELOAD] Failed to load ticker for ${symbol}`);
   }
 
-  const candles = klines.result.list
-    .map(c => ({
-      timestamp: Number(c[0]),
-      close: Number(c[4]),
-    }))
-    // свечи приходят в обратном порядке
-    .sort((a, b) => a.timestamp - b.timestamp);
+  const [candles, oiPoints, fundingPoints] = await Promise.all([
+    fetchKlinesRange(symbol, startTime, endTime),
+    fetchOpenInterestRange(symbol, startTime, endTime),
+    fetchFundingHistoryRange(symbol, startTime, endTime),
+  ]);
 
-  const oiPoints = oiHistory.result.list
-    .map(oi => ({
-      timestamp: Number(oi.timestamp),
-      openInterest: Number(oi.openInterest),
-    }))
-    .sort((a, b) => a.timestamp - b.timestamp);
+  if (!candles.length) {
+    throw new Error(`[PRELOAD] No klines available for ${symbol}`);
+  }
 
-  const fundingRate = Number(funding.result.list[0]!.fundingRate);
+  const volume24h = Number(ticker.result.list[0]!.turnover24h);
 
-  // 2️⃣ Функция поиска актуального OI для свечи
+  type CvdPoint = { timestamp: number; value: number };
+
+  const cvdSeries = buildSyntheticCvdSeries(symbol, [
+    ...candles.map(candle => ({
+      timestamp: candle.timestamp,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+      volume: candle.volume,
+    })),
+  ]);
+
+  function getCvdDelta(timestamp: number, minutes: number): number {
+    if (!minutes || !cvdSeries.length) return 0;
+    const startTs = timestamp - minutes * ONE_MINUTE_MS;
+    if (startTs < cvdSeries[0]!.timestamp) return 0;
+    return getCvdDifference(cvdSeries, startTs, timestamp);
+  }
+
   function getOiForTimestamp(ts: number): number {
+    if (!oiPoints.length) return 0;
     let currentOi = oiPoints[0]!.openInterest;
-
     for (const oi of oiPoints) {
       if (oi.timestamp <= ts) {
         currentOi = oi.openInterest;
@@ -208,14 +435,30 @@ export async function preloadMarketSnapshots(symbol: string): Promise<MarketSnap
     return currentOi;
   }
 
-  // 3️⃣ Собираем MarketSnapshot[]
+  function getFundingRateAt(ts: number): number {
+    if (!fundingPoints.length) return fundingPoints.at(-1)?.fundingRate ?? 0;
+    let rate = fundingPoints[0]!.fundingRate;
+    for (const point of fundingPoints) {
+      if (point.timestamp <= ts) {
+        rate = point.fundingRate;
+      } else {
+        break;
+      }
+    }
+    return rate;
+  }
+
   const snapshots: MarketSnapshot[] = candles.map(candle => ({
     symbol,
     price: candle.close,
-    volume24h: 0, // не критично для логики
+    volume24h,
     openInterest: getOiForTimestamp(candle.timestamp),
-    fundingRate,
+    fundingRate: getFundingRateAt(candle.timestamp),
     timestamp: candle.timestamp,
+    cvd1m: getCvdDelta(candle.timestamp, 1),
+    cvd3m: getCvdDelta(candle.timestamp, 3),
+    cvd15m: getCvdDelta(candle.timestamp, 15),
+    cvd30m: getCvdDelta(candle.timestamp, 30),
   }));
 
   console.log(`[PRELOAD] ${symbol}: loaded ${snapshots.length} snapshots`);

@@ -25,6 +25,7 @@ import {
   LIQUID_IMPULSE_THRESHOLDS,
   PRIORITY_COINS,
 } from '../market/constants.market.js';
+import { parseMonthSelections } from './monthSelection.js';
 
 interface BacktestRunParams {
   symbol: string;
@@ -294,11 +295,14 @@ async function runBotBacktest(params: BacktestRunParams) {
       const shortScore = trade.entryMeta?.shortScore ?? null;
       const scoreStr =
         longScore !== null && shortScore !== null ? `L:${longScore} | S:${shortScore}` : 'n/a';
+      const entrySignalMeta = trade.entryMeta?.entrySignal ?? 'n/a';
+      const signalMeta = trade.entryMeta?.signal ?? 'n/a';
       console.log(
         `${idx + 1}. ${trade.symbol} ${trade.side} | Open:${opened} Close:${closed} | ` +
           `Entry:${entryPrice} Exit:${exitPrice} Qty:${qty} | ` +
           `Gross: ${pnlGrossUsd} USD (${pnlGrossPct}%) | Fees: ${feesUsd} USD | ` +
-          `Net: ${pnlUsd} USD (${pnlPct}%) | Reason: ${trade.reason} | Score: ${scoreStr}`
+          `Net: ${pnlUsd} USD (${pnlPct}%) | Reason: ${trade.reason} | Score: ${scoreStr} | ` +
+          `EntrySignal: ${entrySignalMeta} | Signal: ${signalMeta}`
       );
     });
   } else {
@@ -306,41 +310,61 @@ async function runBotBacktest(params: BacktestRunParams) {
   }
 }
 
-(async () => {
+async function main() {
   const cliArgs = process.argv.slice(2).filter(Boolean);
   const rawSymbol = cliArgs[0] ?? 'SOLUSDT';
   let interval: '1' | '3' | '5' | '15' = '1';
-  let startArg: string | undefined;
-  let endArg: string | undefined;
+  let rangeArgsStartIndex = 1;
 
   if (cliArgs[1] && ['1', '3', '5', '15'].includes(cliArgs[1]!)) {
     interval = cliArgs[1]! as '1' | '3' | '5' | '15';
-    startArg = cliArgs[2];
-    endArg = cliArgs[3];
-  } else {
-    startArg = cliArgs[1];
-    endArg = cliArgs[2];
+    rangeArgsStartIndex = 2;
   }
 
+  const rangeArgs = cliArgs.slice(rangeArgsStartIndex);
   const symbol = normalizeSymbolInput(rawSymbol);
   const snapshotFilePath = resolveSnapshotFilePath(symbol);
+
+  const monthSelections = parseMonthSelections(rangeArgs);
+
+  if (monthSelections && monthSelections.length) {
+    console.log(
+      `🗓️  Months requested: ${monthSelections.map(sel => `${sel.token} (${sel.label})`).join(', ')}`
+    );
+    for (const selection of monthSelections) {
+      console.log(
+        `\n================ ${symbol} | ${selection.label} ================\n` +
+          `Range: ${dayjs(selection.startTime).toISOString()} → ${dayjs(selection.endTime).toISOString()}`
+      );
+      await runBotBacktest({
+        symbol,
+        startTime: selection.startTime,
+        endTime: selection.endTime,
+        interval,
+        snapshotFilePath,
+      });
+    }
+    return;
+  }
 
   let startTime: number;
   let endTime: number;
 
-  if (startArg && endArg) {
-    startTime = Number(startArg);
-    endTime = Number(endArg);
+  if (rangeArgs.length >= 2) {
+    startTime = Number(rangeArgs[0]);
+    endTime = Number(rangeArgs[1]);
   } else {
     const range = await getSnapshotRange(symbol, snapshotFilePath);
     startTime = range.start;
     endTime = range.end;
   }
 
-  runBotBacktest({ symbol, startTime, endTime, interval, snapshotFilePath })
-    .then(() => process.exit(0))
-    .catch(err => {
-      console.error('❌ Bot backtest failed:', err);
-      process.exit(1);
-    });
-})();
+  await runBotBacktest({ symbol, startTime, endTime, interval, snapshotFilePath });
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch(err => {
+    console.error('❌ Bot backtest failed:', err);
+    process.exit(1);
+  });

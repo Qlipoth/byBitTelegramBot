@@ -1,4 +1,5 @@
 import { calculatePositionSizing } from '../market/paperPositionManager.js';
+import { TOTAL_FEE_PCT } from '../market/constants.market.js';
 import type {
   TradeExecutor,
   TradePosition,
@@ -35,8 +36,8 @@ export class BacktestTradeManager implements TradeExecutor {
   constructor(options: BacktestTradeManagerOptions = {}) {
     this.initialBalance = options.initialBalance ?? 10_000;
     this.balance = this.initialBalance;
-    this.feePct = options.feePct ?? 0.0011; // 11 bps round-trip (0.055% per side)
-    this.rrRatio = options.rrRatio ?? 3;
+    this.feePct = options.feePct ?? TOTAL_FEE_PCT; // matches live trading (entry + exit)
+    this.rrRatio = options.rrRatio ?? 2;
   }
 
   async bootstrap(_symbols: string[]): Promise<void> {
