@@ -17,7 +17,7 @@
     "backtest:BTC": "node --loader ts-node/esm src/backtest/botBacktester.ts BTC",
     "backtest:ETH": "node --loader ts-node/esm src/backtest/botBacktester.ts ETH",
     "backtest:SOL": "node --loader ts-node/esm src/backtest/botBacktester.ts SOL",
-    "preload:months": "node --loader ts-node/esm scripts/preloadSnapshotsByMonth.ts ETH sep-2025"
+    "preload:months": "node --loader ts-node/esm scripts/preloadSnapshotsByMonth.ts ETH sep-2025 oct-2025"
   },
   "keywords": ["bybit", "trading", "bot", "telegram", "crypto"],
   "author": "Qlipoth",

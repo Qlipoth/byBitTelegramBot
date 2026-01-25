@@ -3,18 +3,17 @@ import fs from 'fs';
 import path from 'path';
 
 export class FileLogger {
-  private readonly logDir: string;
   private readonly logPath: string;
 
-  constructor(logDir: string = process.env.TMPDIR || '/tmp', fileName: string = 'bot.log') {
-    this.logDir = logDir;
-    this.logPath = path.join(this.logDir, fileName);
+  constructor(logPath: string) {
+    this.logPath = logPath;
     this.ensureLogDir();
   }
 
   private ensureLogDir() {
-    if (!fs.existsSync(this.logDir)) {
-      fs.mkdirSync(this.logDir, { recursive: true });
+    const dir = path.dirname(this.logPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
   }
 
@@ -32,5 +31,20 @@ export class FileLogger {
   }
 }
 
-const defaultLogger = new FileLogger();
-export const logEvent = (data: Record<string, unknown>) => defaultLogger.log(data);
+const tempDir =
+  process.env.BOT_LOG_DIR ||
+  process.env.TMPDIR ||
+  process.env.TEMP ||
+  process.env.TMP ||
+  (process.platform === 'win32' ? 'C:\\tmp' : '/tmp');
+const logFile = process.env.BOT_LOG_FILE ?? path.join(tempDir, 'bot-events.jsonl');
+const isFileLoggingEnabled = process.env.BOT_LOG_ENABLED === '1';
+
+const defaultLogger = isFileLoggingEnabled ? new FileLogger(logFile) : null;
+
+export const logEvent = (data: Record<string, unknown>) => {
+  if (!isFileLoggingEnabled || !defaultLogger) {
+    return;
+  }
+  defaultLogger.log(data);
+};

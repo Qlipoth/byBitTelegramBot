@@ -1,5 +1,13 @@
 import { getTrendThresholds, TREND_THRESHOLDS } from './constants.market.js';
-import type { MarketDelta, MarketPhase } from './types.js';
+import type { MarketDelta, MarketPhase, MarketSnapshot } from './types.js';
+
+type PhaseDetectionSettings = {
+  moveThreshold: number;
+  cvdThreshold: number;
+  oiThreshold: number;
+  baseMoveThreshold?: number;
+  realizedVol?: number;
+};
 
 export function detectTrend(deltaBase: {
   priceChangePct: number;
@@ -74,54 +82,200 @@ export function calculatePriceChanges(prices: number[]): number[] {
   return prices.slice(1).map((price, i) => ((price - prices[i]!) / prices[i]!) * 100);
 }
 
+// export function detectMarketPhase(params: {
+//   delta30m: MarketDelta;
+//   delta15m: MarketDelta;
+//   delta5m: MarketDelta;
+//   cvd30m: number;
+//   settings: PhaseDetectionSettings;
+// }): MarketPhase {
+//   const { delta30m, delta15m, delta5m, cvd30m, settings } = params;
+//   const p30 = delta30m.priceChangePct;
+//   const oi30 = delta30m.oiChangePct;
+//   const oi15 = delta15m.oiChangePct;
+//   const p15 = delta15m.priceChangePct;
+//   const p5 = delta5m.priceChangePct;
+//   const trendDirection = Math.sign(p30);
+//   const hasFreshMomentum =
+//     (Math.sign(p15) === trendDirection && Math.abs(p15) >= settings.moveThreshold * 0.3) ||
+//     (Math.sign(p5) === trendDirection && Math.abs(p5) >= settings.moveThreshold * 0.2);
+//   const cvdSupportsMove =
+//     Math.abs(cvd30m) <= settings.cvdThreshold * 1.2 || Math.sign(cvd30m) === trendDirection;
+//
+//   const isStrongMove = Math.abs(p30) >= settings.moveThreshold;
+//   const moveOvershoot = Math.abs(p30) >= settings.moveThreshold * 1.35;
+//   const strongOiExpansion = Math.abs(oi30) >= settings.oiThreshold;
+//   const oiExpansion15m =
+//     Math.sign(oi15) === Math.sign(oi30) && Math.abs(oi15) >= settings.oiThreshold * 0.6;
+//   const momentumOrOi = hasFreshMomentum || oiExpansion15m;
+//   const trendScore = [
+//     isStrongMove,
+//     strongOiExpansion,
+//     cvdSupportsMove,
+//     hasFreshMomentum,
+//     oiExpansion15m,
+//   ].filter(Boolean).length;
+//
+//   // 1️⃣ ТРЕНД (Используем moveThreshold из настроек)
+//   // Для BTC это будет 0.5%, для щитка 2.0%
+//   if (
+//     trendDirection !== 0 &&
+//     ((isStrongMove && trendScore >= 3) || (moveOvershoot && trendScore >= 2))
+//   ) {
+//     return 'trend';
+//   }
+//
+//   // 2️⃣ НАКОПЛЕНИЕ (Accumulation)
+//   // Цена стоит (меньше порога), но OI растет + CVD выше порога монеты
+//   if (
+//     Math.abs(p30) < settings.moveThreshold * 0.6 &&
+//     oi30 >= settings.oiThreshold * 0.7 &&
+//     (cvd30m > settings.cvdThreshold * 0.6 || (cvdSupportsMove && momentumOrOi))
+//   ) {
+//     return 'accumulation';
+//   }
+//
+//   // 3️⃣ РАСПРЕДЕЛЕНИЕ (Distribution)
+//   if (
+//     Math.abs(p30) < settings.moveThreshold * 0.6 &&
+//     oi30 >= settings.oiThreshold * 0.7 &&
+//     (cvd30m < -settings.cvdThreshold * 0.6 || (!cvdSupportsMove && momentumOrOi))
+//   ) {
+//     return 'distribution';
+//   }
+//
+//   // 4️⃣ КУЛЬМИНАЦИЯ / ВЫХОД
+//   // Цена уже пробила или почти пробила порог тренда, но OI начал резко сокращаться
+//   const isExtremeMove = Math.abs(p30) >= settings.moveThreshold * 0.85;
+//   const isOiCollapsing = oi15 <= -settings.oiThreshold * 0.7;
+//   const hasReversal =
+//     trendDirection !== 0 &&
+//     Math.sign(p15) === -trendDirection &&
+//     Math.abs(p15) >= settings.moveThreshold * 0.35;
+//   const hasSharpPullback =
+//     trendDirection !== 0 &&
+//     Math.sign(p5) === -trendDirection &&
+//     Math.abs(p5) >= settings.moveThreshold * 0.25;
+//
+//   if (isExtremeMove && isOiCollapsing && (hasReversal || hasSharpPullback)) {
+//     return 'blowoff';
+//   }
+//
+//   return 'range';
+// }
+
 export function detectMarketPhase(params: {
   delta30m: MarketDelta;
   delta15m: MarketDelta;
+  delta5m: MarketDelta;
   cvd30m: number;
-  settings: { moveThreshold: number; cvdThreshold: number; oiThreshold: number };
+  settings: PhaseDetectionSettings;
 }): MarketPhase {
-  const { delta30m, delta15m, cvd30m, settings } = params;
-  const p30 = delta30m.priceChangePct;
-  const oi30 = delta30m.oiChangePct;
-  const oi15 = delta15m.oiChangePct;
-  const cvdSupportsMove =
-    Math.abs(cvd30m) < settings.cvdThreshold || Math.sign(p30) === Math.sign(cvd30m);
+  const { delta30m, cvd30m, settings } = params;
+  const priceMove30m = Math.abs(delta30m.priceChangePct ?? 0);
+  const oiMove30m = Math.abs(delta30m.oiChangePct ?? 0);
+  const dataAge = delta30m.minutesAgo ?? 0;
 
-  // 1️⃣ ТРЕНД (Используем moveThreshold из настроек)
-  // Для BTC это будет 0.5%, для щитка 2.0%
+  // 1) Протухшие данные → Range
+  if (!Number.isFinite(dataAge) || dataAge >= 45) {
+    return 'range';
+  }
+
+  // 2) Пустой импульс без набора позиций → Range
   if (
-    Math.abs(p30) >= settings.moveThreshold &&
-    Math.abs(oi30) >= settings.oiThreshold &&
-    cvdSupportsMove
+    priceMove30m >= settings.moveThreshold &&
+    oiMove30m < settings.oiThreshold * 0.4 &&
+    Math.abs(cvd30m) < settings.cvdThreshold * 0.4
+  ) {
+    return 'range';
+  }
+
+  // 3) Сильная дивергенция CVD против движения цены → Range
+  const priceSign = Math.sign(delta30m.priceChangePct ?? 0);
+  const cvdSign = Math.sign(cvd30m);
+  if (
+    priceSign !== 0 &&
+    cvdSign !== 0 &&
+    priceSign !== cvdSign &&
+    Math.abs(cvd30m) >= settings.cvdThreshold * 0.8 &&
+    priceMove30m >= settings.moveThreshold * 0.8
+  ) {
+    return 'range';
+  }
+
+  return legacyPhaseDetection(params);
+}
+
+function legacyPhaseDetection(params: {
+  delta30m: MarketDelta;
+  delta15m: MarketDelta;
+  delta5m: MarketDelta;
+  cvd30m: number;
+  settings: PhaseDetectionSettings;
+}): MarketPhase {
+  const { delta30m, delta15m, delta5m, cvd30m, settings } = params;
+  const p30 = delta30m.priceChangePct ?? 0;
+  const oi30 = delta30m.oiChangePct ?? 0;
+  const oi15 = delta15m.oiChangePct ?? 0;
+  const p15 = delta15m.priceChangePct ?? 0;
+  const p5 = delta5m.priceChangePct ?? 0;
+  const trendDirection = Math.sign(p30);
+
+  const hasFreshMomentum =
+    (Math.sign(p15) === trendDirection && Math.abs(p15) >= settings.moveThreshold * 0.3) ||
+    (Math.sign(p5) === trendDirection && Math.abs(p5) >= settings.moveThreshold * 0.2);
+  const cvdSupportsMove =
+    Math.abs(cvd30m) <= settings.cvdThreshold * 1.2 || Math.sign(cvd30m) === trendDirection;
+
+  const isStrongMove = Math.abs(p30) >= settings.moveThreshold;
+  const moveOvershoot = Math.abs(p30) >= settings.moveThreshold * 1.35;
+  const strongOiExpansion = Math.abs(oi30) >= settings.oiThreshold;
+  const oiExpansion15m =
+    Math.sign(oi15) === Math.sign(oi30) && Math.abs(oi15) >= settings.oiThreshold * 0.6;
+  const momentumOrOi = hasFreshMomentum || oiExpansion15m;
+  const trendScore = [
+    isStrongMove,
+    strongOiExpansion,
+    cvdSupportsMove,
+    hasFreshMomentum,
+    oiExpansion15m,
+  ].filter(Boolean).length;
+
+  if (
+    trendDirection !== 0 &&
+    ((isStrongMove && trendScore >= 3) || (moveOvershoot && trendScore >= 2))
   ) {
     return 'trend';
   }
 
-  // 2️⃣ НАКОПЛЕНИЕ (Accumulation)
-  // Цена стоит (меньше порога), но OI растет + CVD выше порога монеты
   if (
-    Math.abs(p30) < settings.moveThreshold * 0.5 &&
-    oi30 > settings.oiThreshold &&
-    cvd30m > settings.cvdThreshold
+    Math.abs(p30) < settings.moveThreshold * 0.6 &&
+    oi30 >= settings.oiThreshold * 0.7 &&
+    (cvd30m > settings.cvdThreshold * 0.6 || (cvdSupportsMove && momentumOrOi))
   ) {
     return 'accumulation';
   }
 
-  // 3️⃣ РАСПРЕДЕЛЕНИЕ (Distribution)
   if (
-    Math.abs(p30) < settings.moveThreshold * 0.5 &&
-    oi30 > settings.oiThreshold &&
-    cvd30m < -settings.cvdThreshold
+    Math.abs(p30) < settings.moveThreshold * 0.6 &&
+    oi30 >= settings.oiThreshold * 0.7 &&
+    (cvd30m < -settings.cvdThreshold * 0.6 || (!cvdSupportsMove && momentumOrOi))
   ) {
     return 'distribution';
   }
 
-  // 4️⃣ КУЛЬМИНАЦИЯ / ВЫХОД
-  // Цена уже пробила или почти пробила порог тренда, но OI начал резко сокращаться
-  const isExtremeMove = Math.abs(p30) >= settings.moveThreshold * 0.9;
-  const isOiCollapsing = oi15 <= -settings.oiThreshold;
+  const isExtremeMove = Math.abs(p30) >= settings.moveThreshold * 0.85;
+  const isOiCollapsing = oi15 <= -settings.oiThreshold * 0.7;
+  const hasReversal =
+    trendDirection !== 0 &&
+    Math.sign(p15) === -trendDirection &&
+    Math.abs(p15) >= settings.moveThreshold * 0.35;
+  const hasSharpPullback =
+    trendDirection !== 0 &&
+    Math.sign(p5) === -trendDirection &&
+    Math.abs(p5) >= settings.moveThreshold * 0.25;
 
-  if (isExtremeMove && isOiCollapsing) {
+  if (isExtremeMove && isOiCollapsing && (hasReversal || hasSharpPullback)) {
     return 'blowoff';
   }
 

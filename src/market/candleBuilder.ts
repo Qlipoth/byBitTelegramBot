@@ -1,3 +1,5 @@
+import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
+
 // Интерфейс для хранения данных свечи
 interface Candle {
   minute: number;
@@ -21,14 +23,7 @@ interface CandleState {
 
 export const candleState: CandleState = {};
 
-// Константы для адаптивной настройки
-const CONFIG = {
-  MIN_ATR_PCT: 0.15,
-  MIN_MOVE_THRESHOLD: 0.15,
-  MIN_CVD_THRESHOLD: 300,
-  HISTORY_LIMIT: 500,
-  VOLUME_AVG_PERIOD: 30, // Считаем средний объем за 30 минут
-} as const;
+const candleConfig = STRATEGY_CONFIG.candleBuilder;
 
 export function initSymbol(symbol: string): void {
   if (!candleState[symbol]) {
@@ -58,13 +53,13 @@ export function handleTrade(symbol: string, trade: TradeMessage): void {
   if (!state.current || state.current.minute !== minute) {
     if (state.current) {
       state.history.push(state.current);
-      if (state.history.length > CONFIG.HISTORY_LIMIT) state.history.shift();
+      if (state.history.length > candleConfig.historyLimit) state.history.shift();
 
       // Пересчитываем метрики при закрытии свечи
       state.atr = calculateATRFromCandles(state.history, 14);
 
       // Считаем средний объем за последние 30 минут
-      const lastVols = state.history.slice(-CONFIG.VOLUME_AVG_PERIOD).map(c => c.volume);
+      const lastVols = state.history.slice(-candleConfig.volumeAvgPeriod).map(c => c.volume);
       state.avgVolume = lastVols.reduce((a, b) => a + b, 0) / (lastVols.length || 1);
     }
 
@@ -81,18 +76,21 @@ export function handleTrade(symbol: string, trade: TradeMessage): void {
 export function getCvdThreshold(symbol: string) {
   const state = candleState[symbol];
   if (!state || !state.current || state.history.length < 15) {
-    return { moveThreshold: CONFIG.MIN_MOVE_THRESHOLD, cvdThreshold: CONFIG.MIN_CVD_THRESHOLD };
+    return {
+      moveThreshold: candleConfig.minMoveThreshold,
+      cvdThreshold: candleConfig.minCvdThreshold,
+    };
   }
 
   const price = state.current.close;
   const atrPct = (state.atr / price) * 100;
 
   // Порог движения: минимум 0.15%, или 1.2 от текущей волатильности
-  const moveThreshold = Math.max(atrPct * 1.2, CONFIG.MIN_MOVE_THRESHOLD);
+  const moveThreshold = Math.max(atrPct * 1.2, candleConfig.minMoveThreshold);
 
   // Порог CVD: берем средний объем за 30 мин и требуем всплеск в 1.3 раза
   // Это делает порог индивидуальным для каждой монеты автоматически
-  const cvdThreshold = Math.max(state.avgVolume * 1.3, CONFIG.MIN_CVD_THRESHOLD);
+  const cvdThreshold = Math.max(state.avgVolume * 1.3, candleConfig.minCvdThreshold);
 
   return {
     moveThreshold: Number(moveThreshold.toFixed(3)),
@@ -174,7 +172,7 @@ export function ingestHistoricalCandle(symbol: string, candle: HistoricalCandleI
 
   if (state.current) {
     state.history.push(state.current);
-    if (state.history.length > CONFIG.HISTORY_LIMIT) {
+    if (state.history.length > candleConfig.historyLimit) {
       state.history.shift();
     }
   }
@@ -190,6 +188,6 @@ export function ingestHistoricalCandle(symbol: string, candle: HistoricalCandleI
 
   state.atr = calculateATRFromCandles(state.history, 14);
 
-  const lastVols = state.history.slice(-CONFIG.VOLUME_AVG_PERIOD).map(c => c.volume);
+  const lastVols = state.history.slice(-candleConfig.volumeAvgPeriod).map(c => c.volume);
   state.avgVolume = lastVols.reduce((a, b) => a + b, 0) / (lastVols.length || 1);
 }

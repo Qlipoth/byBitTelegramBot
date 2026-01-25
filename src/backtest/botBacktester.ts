@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import {
   ingestHistoricalCandle,
@@ -13,6 +13,7 @@ import {
 } from '../market/snapshotStore.js';
 import { BacktestTradeManager } from './backtestTradeManager.js';
 import { startMarketWatcher } from '../market/watcher.js';
+import type { PhaseLogEvent } from '../market/watcher.js';
 import { tradingState } from '../core/tradingState.js';
 import { buildSyntheticCvdSeries, getCvdDifference } from './cvdBuilder.js';
 import { buildCachePath, fetchBybitCandles, INTERVAL_TO_MS } from './candleLoader.js';
@@ -240,36 +241,81 @@ async function runBotBacktest(params: BacktestRunParams) {
   // Replay using watcher
   let cursor = warmupCount;
   tradingState.enable();
-  await startMarketWatcher(params.symbol, console.log, {
-    tradeExecutor,
-    warmupSnapshots: recordedSnapshots.slice(0, warmupCount),
-    snapshotProvider: async () => {
-      if (cursor >= recordedSnapshots.length) return null;
-      const snap = recordedSnapshots[cursor]!;
-      const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
-      console.log(
-        `[SNAP/BACKTEST] ${params.symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
-      );
-      ingestHistoricalCandle(params.symbol, candles[cursor]!);
-      cursor++;
-      return snap;
-    },
-    balanceProvider: async () => tradeExecutor.getBalance(),
-    cvdProvider: (_symbol, minutes, referenceTs) => {
-      const recordedValue = getRecordedCvdValue(snapshotByTimestamp.get(referenceTs), minutes);
-      if (typeof recordedValue === 'number') {
-        return recordedValue;
-      }
-      throw new Error(
-        `[BACKTEST] Missing ${minutes}m CVD in snapshots for ${params.symbol} @ ${referenceTs}`
-      );
-    },
-    intervalMs: 0,
-    enableRealtime: false,
-    entryMode: 'classic',
-  });
+
+  const tempDir =
+    process.platform === 'win32'
+      ? 'C:\\tmp'
+      : process.env.TMPDIR || process.env.TEMP || process.env.TMP || '/tmp';
+  const phaseLogPath = path.join(tempDir, `phases-${params.symbol}.jsonl`);
+  console.log(`[PHASE_LOG] Writing detectMarketPhase telemetry to ${phaseLogPath}`);
+  await fs.mkdir(path.dirname(phaseLogPath), { recursive: true });
+  const phaseLogStream = createWriteStream(phaseLogPath, { flags: 'w' });
+  const phaseLogger = (event: PhaseLogEvent) => {
+    const payload = {
+      ...event,
+      isoTime: dayjs(event.timestamp).toISOString(),
+    };
+    try {
+      phaseLogStream.write(`${JSON.stringify(payload)}\n`);
+    } catch (err) {
+      console.error('[PHASE_LOG] Failed to write entry:', err);
+    }
+  };
+
+  try {
+    await startMarketWatcher(params.symbol, console.log, {
+      tradeExecutor,
+      warmupSnapshots: recordedSnapshots.slice(0, warmupCount),
+      snapshotProvider: async () => {
+        if (cursor >= recordedSnapshots.length) return null;
+        const snap = recordedSnapshots[cursor]!;
+        const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+        console.log(
+          `[SNAP/BACKTEST] ${params.symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
+        );
+        ingestHistoricalCandle(params.symbol, candles[cursor]!);
+        cursor++;
+        return snap;
+      },
+      balanceProvider: async () => tradeExecutor.getBalance(),
+      cvdProvider: (_symbol, minutes, referenceTs) => {
+        const recordedValue = getRecordedCvdValue(snapshotByTimestamp.get(referenceTs), minutes);
+        if (typeof recordedValue === 'number') {
+          return recordedValue;
+        }
+        throw new Error(
+          `[BACKTEST] Missing ${minutes}m CVD in snapshots for ${params.symbol} @ ${referenceTs}`
+        );
+      },
+      intervalMs: 0,
+      enableRealtime: false,
+      entryMode: 'classic',
+      phaseLogger,
+    });
+  } finally {
+    await new Promise<void>(resolve => phaseLogStream.end(resolve));
+  }
 
   const stats = tradeExecutor.getStats();
+  const statsPayload = {
+    generatedAt: dayjs().toISOString(),
+    symbol: params.symbol,
+    startTime: params.startTime,
+    endTime: params.endTime,
+    snapshotFilePath: params.snapshotFilePath,
+    ...stats,
+  };
+  const statsPath = path.join(
+    tempDir,
+    `bot-backtest-stats-${params.symbol}-${params.startTime}-${params.endTime}.json`
+  );
+  try {
+    await fs.mkdir(path.dirname(statsPath), { recursive: true });
+    await fs.writeFile(statsPath, JSON.stringify(statsPayload, null, 2));
+    console.log(`[BACKTEST] Stats written to ${statsPath}`);
+  } catch (err) {
+    console.error('[BACKTEST] Failed to write stats file:', err);
+  }
   console.log('================ BOT BACKTEST REPORT ================');
   console.log(`Symbol: ${params.symbol}`);
   console.log(`Source file: ${params.snapshotFilePath}`);

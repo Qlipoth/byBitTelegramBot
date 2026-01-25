@@ -29,7 +29,7 @@ interface ClosedTrade extends OpenTrade {
   exitPrice: number;
   exitTime: number;
   pnl: number;
-  reason: 'STOP' | 'TAKE' | 'FLIP';
+  reason: 'STOP' | 'TAKE' | 'FLIP' | 'MEAN';
 }
 
 interface TradeDiagnostic {
@@ -52,7 +52,7 @@ const DEFAULT_SYMBOL = 'ETHUSDT';
 const STOP_ATR_MULT = 1.5;
 const TAKE_ATR_MULT = 3.0;
 const RISK_PER_TRADE = 0.01; // 1% от баланса
-const START_BALANCE = 10_000;
+const START_BALANCE = 1000;
 function annotateExit(diagnostics: TradeDiagnostic[], trade: OpenTrade, closed: ClosedTrade): void {
   const diag = diagnostics[trade.statIndex];
   if (!diag) return;
@@ -81,6 +81,34 @@ function applyInBarExit(
       return { reason: 'TAKE', price: trade.takePrice };
     }
   }
+  return null;
+}
+
+const MEAN_EXIT_TOLERANCE = 0.0005;
+
+function checkMeanReversionExit(
+  trade: OpenTrade,
+  candle: HistoricalCandleInput,
+  context: ReturnType<typeof adaptiveBollingerStrategy.getContext>
+): { reason: 'MEAN'; price: number } | null {
+  if (!context) return null;
+  const { middle } = context;
+  if (!Number.isFinite(middle)) {
+    return null;
+  }
+
+  if (trade.side === 'LONG') {
+    const triggerPrice = middle * (1 - MEAN_EXIT_TOLERANCE);
+    if (candle.high >= triggerPrice) {
+      return { reason: 'MEAN', price: middle };
+    }
+  } else {
+    const triggerPrice = middle * (1 + MEAN_EXIT_TOLERANCE);
+    if (candle.low <= triggerPrice) {
+      return { reason: 'MEAN', price: middle };
+    }
+  }
+
   return null;
 }
 
@@ -162,10 +190,19 @@ async function runBacktest(
   const trades: ClosedTrade[] = [];
   const diagnostics: TradeDiagnostic[] = [];
 
+  const commitClose = (trade: OpenTrade, closed: ClosedTrade) => {
+    trades.push(closed);
+    annotateExit(diagnostics, trade, closed);
+    balance += closed.pnl;
+    maxEquity = Math.max(maxEquity, balance);
+    maxDrawdown = Math.max(maxDrawdown, maxEquity - balance);
+  };
+
   for (const candle of candles) {
     ingestHistoricalCandle(symbol, candle);
 
     const signalResult = adaptiveBollingerStrategy.getSignal(symbol);
+    const contextSnapshot = adaptiveBollingerStrategy.getContext(symbol);
     if (!signalResult.ready) {
       continue;
     }
@@ -175,12 +212,16 @@ async function runBacktest(
       const exit = applyInBarExit(openTrade, candle);
       if (exit) {
         const closed = closeTrade(openTrade, exit.price, candle.timestamp, exit.reason);
-        trades.push(closed);
-        annotateExit(diagnostics, openTrade, closed);
-        balance += closed.pnl;
-        maxEquity = Math.max(maxEquity, balance);
-        maxDrawdown = Math.max(maxDrawdown, maxEquity - balance);
+        commitClose(openTrade, closed);
         openTrade = null;
+        continue;
+      }
+      const meanExit = checkMeanReversionExit(openTrade, candle, contextSnapshot);
+      if (meanExit) {
+        const closed = closeTrade(openTrade, meanExit.price, candle.timestamp, meanExit.reason);
+        commitClose(openTrade, closed);
+        openTrade = null;
+        continue;
       }
     }
 
@@ -188,11 +229,7 @@ async function runBacktest(
     if (openTrade && signalResult.signal !== openTrade.side && signalResult.signal !== 'NONE') {
       const flipPrice = candle.close;
       const closed = closeTrade(openTrade, flipPrice, candle.timestamp, 'FLIP');
-      trades.push(closed);
-      annotateExit(diagnostics, openTrade, closed);
-      balance += closed.pnl;
-      maxEquity = Math.max(maxEquity, balance);
-      maxDrawdown = Math.max(maxDrawdown, maxEquity - balance);
+      commitClose(openTrade, closed);
       openTrade = null;
     }
 
@@ -215,7 +252,6 @@ async function runBacktest(
       const takePrice: number =
         side === 'LONG' ? entryPrice + atr * TAKE_ATR_MULT : entryPrice - atr * TAKE_ATR_MULT;
 
-      const contextSnapshot = adaptiveBollingerStrategy.getContext(symbol);
       const distanceToMiddle =
         contextSnapshot && contextSnapshot.middle
           ? Math.abs(contextSnapshot.close - contextSnapshot.middle) / contextSnapshot.middle
@@ -259,11 +295,7 @@ async function runBacktest(
   if (openTrade) {
     const lastCandle = candles[candles.length - 1]!;
     const closed = closeTrade(openTrade, lastCandle.close, lastCandle.timestamp, 'FLIP');
-    trades.push(closed);
-    annotateExit(diagnostics, openTrade, closed);
-    balance += closed.pnl;
-    maxEquity = Math.max(maxEquity, balance);
-    maxDrawdown = Math.max(maxDrawdown, maxEquity - balance);
+    commitClose(openTrade, closed);
   }
 
   const wins = trades.filter(t => t.pnl > 0);

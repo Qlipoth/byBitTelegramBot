@@ -26,6 +26,8 @@ import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type {
   IMPULSE_THRESHOLDS_CONFIG,
+  MarketDelta,
+  MarketPhase,
   MarketSnapshot,
   MarketState,
   SymbolValue,
@@ -36,6 +38,7 @@ import { logEvent } from './logger.js';
 import { realTradeManager } from './realTradeManager.js';
 import type { TradeExecutor } from './tradeExecutor.js';
 import { tradingState } from '../core/tradingState.js';
+import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -46,6 +49,7 @@ const tradeFSMBySymbol = new Map<string, ReturnType<typeof createFSM>>();
 const ATR_PERIOD = 14;
 const CSI_WINDOW = 30;
 const CSI_BODY_WINDOW = 5;
+const VOL_WINDOW = 30;
 
 function computeSnapshotATR(snaps: MarketSnapshot[], period: number = ATR_PERIOD): number {
   if (snaps.length < 2) return 0;
@@ -107,6 +111,54 @@ function computeSnapshotCSI(snaps: MarketSnapshot[]): number {
   return Number(csi.toFixed(4));
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function computeSnapshotVolatility(snaps: MarketSnapshot[], window: number = VOL_WINDOW): number {
+  if (snaps.length < 2) return 0;
+  const windowSnaps = snaps.slice(-(window + 1));
+  if (windowSnaps.length < 2) return 0;
+  const returns: number[] = [];
+  for (let i = 1; i < windowSnaps.length; i++) {
+    const prev = windowSnaps[i - 1];
+    const curr = windowSnaps[i];
+    if (!prev || !curr || !prev.price || !curr.price) continue;
+    const ret = Math.log(curr.price / prev.price);
+    if (Number.isFinite(ret)) {
+      returns.push(ret);
+    }
+  }
+  if (!returns.length) return 0;
+  const mean = returns.reduce((sum, val) => sum + val, 0) / returns.length;
+  const variance =
+    returns.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) /
+    Math.max(returns.length - 1, 1);
+  const std = Math.sqrt(Math.max(variance, 0));
+  return Number((std * 100).toFixed(4));
+}
+
+const { watcher: watcherConfig } = STRATEGY_CONFIG;
+const MIN_MOVE_THRESHOLD = watcherConfig.minMoveThreshold;
+const MAX_MOVE_THRESHOLD_MULTIPLIER = watcherConfig.maxMoveThresholdMultiplier;
+
+function deriveAdaptiveMoveThreshold(base: number, realizedVol: number): number {
+  if (!Number.isFinite(base) || base <= 0) {
+    return base;
+  }
+  if (!Number.isFinite(realizedVol) || realizedVol <= 0) {
+    const fallback = base * 0.5;
+    return Number(
+      clamp(fallback, MIN_MOVE_THRESHOLD, base * MAX_MOVE_THRESHOLD_MULTIPLIER).toFixed(3)
+    );
+  }
+  const ratio = realizedVol / base;
+  const multiplier = clamp(ratio, 0.5, 1.4);
+  const adjusted = base * multiplier;
+  const clamped = clamp(adjusted, MIN_MOVE_THRESHOLD, base * MAX_MOVE_THRESHOLD_MULTIPLIER);
+  return Number(clamped.toFixed(3));
+}
+
 type SnapshotThresholds = {
   moveThreshold: number;
   cvdThreshold: number;
@@ -115,6 +167,27 @@ type SnapshotThresholds = {
 };
 
 type SnapshotWithThresholds = MarketSnapshot & { thresholds: SnapshotThresholds };
+
+export interface PhaseLogEvent {
+  symbol: string;
+  timestamp: number;
+  price: number;
+  phase: MarketPhase;
+  has30m: boolean;
+  inputs: {
+    delta30m: MarketDelta;
+    delta15m: MarketDelta;
+    delta5m: MarketDelta;
+    cvd30m: number;
+    settings: {
+      moveThreshold: number;
+      baseMoveThreshold?: number;
+      cvdThreshold: number;
+      oiThreshold: number;
+      realizedVol?: number;
+    };
+  };
+}
 
 interface WatcherOptions {
   tradeExecutor?: TradeExecutor;
@@ -126,6 +199,7 @@ interface WatcherOptions {
   onComplete?: () => void;
   entryMode?: 'adaptive' | 'classic';
   cvdProvider?: (symbol: string, minutes: number, referenceTs: number) => number;
+  phaseLogger?: (event: PhaseLogEvent) => void;
 }
 
 // =====================
@@ -343,13 +417,26 @@ export async function startMarketWatcher(
       // calcPercentChange() опирается на свечи из trade-stream и часто даёт 0 при недостатке истории.
       // Для сигнальной логики надёжнее использовать изменения цены по снапшотам.
       const pricePercentChange = delta15m.priceChangePct;
-      const { moveThreshold, cvdThreshold, oiThreshold, impulse } = snap.thresholds!;
+      const thresholds = snap.thresholds!;
+      const baseMoveThreshold = thresholds.moveThreshold;
+      const baseCvdThreshold = thresholds.cvdThreshold;
+      const baseOiThreshold = thresholds.oiThreshold;
+      const impulse = thresholds.impulse;
+      const realizedVol = computeSnapshotVolatility(snaps);
+      const moveThreshold = deriveAdaptiveMoveThreshold(baseMoveThreshold, realizedVol);
+      const volRatio =
+        Number.isFinite(realizedVol) && realizedVol > 0 && baseMoveThreshold > 0
+          ? clamp(realizedVol / baseMoveThreshold, 0.7, 1.3)
+          : 1;
+      const cvdThreshold = Number((baseCvdThreshold * clamp(1 / volRatio, 0.75, 1.25)).toFixed(0));
+      const oiThreshold = Number((baseOiThreshold * clamp(volRatio, 0.8, 1.2)).toFixed(3));
       const habrMode = entryMode === 'adaptive' && adaptiveBollingerStrategy.isSupported(symbol);
 
       state.phase = has30m
         ? detectMarketPhase({
             delta30m,
             delta15m,
+            delta5m,
             cvd30m,
             settings: {
               moveThreshold,
@@ -359,9 +446,40 @@ export async function startMarketWatcher(
           })
         : 'range';
 
+      if (has30m && options.phaseLogger) {
+        options.phaseLogger({
+          symbol,
+          timestamp: snap.timestamp,
+          price: snap.price,
+          phase: state.phase,
+          has30m,
+          inputs: {
+            delta30m: { ...delta30m },
+            delta15m: { ...delta15m },
+            delta5m: { ...delta5m },
+            cvd30m,
+            settings: {
+              moveThreshold,
+              baseMoveThreshold,
+              cvdThreshold,
+              oiThreshold,
+              realizedVol,
+            },
+          },
+        });
+      }
+
       logData.phase = state.phase;
       logData.pricePercentChange = pricePercentChange;
-      logData.thresholds = { cvdThreshold, moveThreshold, oiThreshold };
+      logData.thresholds = {
+        cvdThreshold,
+        moveThreshold,
+        baseMoveThreshold,
+        oiThreshold,
+        realizedVol,
+        baseOiThreshold,
+        baseCvdThreshold,
+      };
       logData.fundingRate = snap.fundingRate;
 
       // =====================

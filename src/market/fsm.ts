@@ -32,7 +32,7 @@ export const CONFIG = {
   COOLDOWN_DURATION: 0, // пауза после выхода выключена
   // Максимальное время в сделке для ФЛЕТА (Range)
   // Во флете нам важно быстро зайти и выйти, пока цена не пробила канал.
-  MAX_RANGE_HOLD: 15 * 60 * 1000, // 25 минут
+  MAX_RANGE_HOLD: 45 * 60 * 1000, // 25 минут
 
   // Максимальное время в сделке для ТРЕНДА (Trend/Accumulation)
   // В тренде мы даем позиции "подышать", чтобы забрать большое движение.
@@ -41,6 +41,16 @@ export const CONFIG = {
   // Общий лимит на случай, если фаза не определена
   MAX_POSITION_DURATION: 45 * 60 * 1000, // 45 минут
 };
+
+function getPhaseHoldLimit(phase: string): number {
+  if (phase === 'trend' || phase === 'accumulation') {
+    return CONFIG.MAX_TREND_HOLD;
+  }
+  if (phase === 'range' || phase === 'distribution') {
+    return CONFIG.MAX_RANGE_HOLD;
+  }
+  return CONFIG.MAX_POSITION_DURATION;
+}
 
 export function createFSM(): FSMContext {
   return {
@@ -153,7 +163,7 @@ export const EXIT_THRESHOLDS = {
   MICRO_PROFIT_HOLD_PCT: 0.5, // не выходим, если профит еще микроскопический
   FUNDING_LONG: 0.0006,
   FUNDING_SHORT: -0.0006,
-  MAX_HOLD_TIME: 30 * 60 * 1000,
+  MAX_HOLD_TIME: 90 * 60 * 1000,
 };
 
 export type ExitReason =
@@ -190,6 +200,16 @@ export function shouldExitPosition({
   const cvd3m = typeof snapshot.cvd3m === 'number' ? snapshot.cvd3m : 0;
   const pnlPct = ((currentPrice - entryPrice) / entryPrice) * (fsm.side === 'LONG' ? 100 : -100);
   const timeInPosition = now - (fsm.openedAt || 0);
+  const phaseHoldLimit = Math.min(getPhaseHoldLimit(phase), CONFIG.MAX_POSITION_DURATION);
+  const stagnationWindow = Math.min(EXIT_THRESHOLDS.MAX_HOLD_TIME, phaseHoldLimit);
+  const moveTargetPct =
+    snapshot.thresholds?.moveThreshold ??
+    CONFIG.MIN_MOVE_THRESHOLD ??
+    EXIT_THRESHOLDS.TAKE_PROFIT_PCT / 2;
+
+  if (timeInPosition >= phaseHoldLimit) {
+    return { exit: true, reason: 'MAX_POSITION_DURATION' };
+  }
 
   // 1. ЖЕСТКИЙ СТОП-ЛОСС (из конфига)
   if (pnlPct <= -EXIT_THRESHOLDS.STOP_LOSS_PCT) return { exit: true, reason: 'STOP_LOSS' };
@@ -206,7 +226,7 @@ export function shouldExitPosition({
   // Если мы в просадке и видим агрессивный CVD в обратную сторону (1.5 млн за 3 мин)
 
   const cvdReversal = 2500000;
-  if (timeInPosition > 30 * 60 * 1000 && pnlPct < 0) {
+  if (timeInPosition > 45 * 60 * 1000 && pnlPct < 0) {
     if (fsm.side === 'LONG' && cvd3m < -cvdReversal) return { exit: true, reason: 'CVD_REVERSAL' };
     if (fsm.side === 'SHORT' && cvd3m > cvdReversal) return { exit: true, reason: 'CVD_REVERSAL' };
   }
@@ -216,8 +236,12 @@ export function shouldExitPosition({
 
   // 4. ВЫХОД ПО ТАЙМАУТУ (Мягкий стагнация-фильтр)
   // Если за 30 минут не ушли в нормальный плюс (> 0.2%), закрываем вялую позицию.
-  if (timeInPosition > 30 * 60 * 1000 && pnlPct < 0.2) {
-    return { exit: true, reason: 'TIMEOUT' };
+  if (timeInPosition > stagnationWindow) {
+    const progressRatio = Math.min(timeInPosition / phaseHoldLimit, 1);
+    const requiredPnl = moveTargetPct * progressRatio;
+    if (pnlPct < requiredPnl) {
+      return { exit: true, reason: 'TIMEOUT' };
+    }
   }
 
   // 5. ТЕЙК-ПРОФИТ (Твоя логика)

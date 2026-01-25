@@ -10,7 +10,8 @@ import type {
   SignalAgreementParams,
   SymbolValue,
 } from './types.js';
-import { getCSI } from './candleBuilder.js';
+import { getCSI, getCvdThreshold } from './candleBuilder.js';
+import { getSnapshots } from './snapshotStore.js';
 
 /**
  * Formats funding rate into a human-readable string
@@ -505,44 +506,25 @@ const MARKET_SETTINGS = {
   },
 };
 
-const COIN_THRESHOLD_OVERRIDES: Partial<
-  Record<
-    SymbolValue,
-    {
-      moveThreshold: number;
-      cvdThreshold: number;
-      oiThreshold: number;
-    }
-  >
-> = {
-  [SYMBOLS.SOL]: {
-    moveThreshold: 0.45,
-    cvdThreshold: 4500,
-    oiThreshold: 0.5,
-  },
+type CoinThresholds = {
+  moveThreshold: number;
+  cvdThreshold: number;
+  oiThreshold: number;
 };
+
+const SNAPSHOT_OI_MIN_SAMPLES = 8;
+const SNAPSHOT_OI_PERCENTILE = 0.85;
 
 /**
  * Определяет категорию монеты и возвращает соответствующие пороги
  */
 export function selectCoinThresholds(symbol: SymbolValue) {
-  const override = COIN_THRESHOLD_OVERRIDES[symbol];
-  if (override) {
-    return override;
+  const dynamic = buildDynamicThresholds(symbol);
+  if (dynamic) {
+    return dynamic;
   }
 
-  const liquidCoins = new Set<SymbolValue>([SYMBOLS.BTC, SYMBOLS.ETH]);
-  const volatileCoins = new Set<SymbolValue>([SYMBOLS.XRP, SYMBOLS.PIPPIN, SYMBOLS.BEAT]);
-
-  if (liquidCoins.has(symbol)) {
-    return MARKET_SETTINGS.LIQUID;
-  }
-
-  if (volatileCoins.has(symbol)) {
-    return MARKET_SETTINGS.VOLATILE;
-  }
-
-  return MARKET_SETTINGS.MEDIUM;
+  return getFallbackThresholds(symbol);
 }
 
 /**
@@ -764,6 +746,69 @@ function findNearestOi(points: OpenInterestRow[], timestamp: number): number {
     }
   }
   return latest;
+}
+
+function buildDynamicThresholds(symbol: SymbolValue): CoinThresholds | null {
+  const { moveThreshold, cvdThreshold } = getCvdThreshold(symbol);
+  const oiThreshold = computeOiThresholdFromSnapshots(symbol);
+
+  if (!Number.isFinite(moveThreshold) || !Number.isFinite(cvdThreshold)) {
+    return null;
+  }
+
+  if (oiThreshold === null) {
+    return null;
+  }
+
+  return {
+    moveThreshold,
+    cvdThreshold,
+    oiThreshold,
+  };
+}
+
+function computeOiThresholdFromSnapshots(symbol: SymbolValue): number | null {
+  const snaps = getSnapshots(symbol);
+  if (snaps.length < SNAPSHOT_OI_MIN_SAMPLES) {
+    return null;
+  }
+
+  const oiChanges: number[] = [];
+  for (let i = 1; i < snaps.length; i++) {
+    const prev = snaps[i - 1];
+    const curr = snaps[i];
+    if (!prev?.openInterest || !curr?.openInterest || prev.openInterest === 0) continue;
+    const pct = Math.abs(((curr.openInterest - prev.openInterest) / prev.openInterest) * 100);
+    if (Number.isFinite(pct)) {
+      oiChanges.push(pct);
+    }
+  }
+
+  if (oiChanges.length < SNAPSHOT_OI_MIN_SAMPLES) {
+    return null;
+  }
+
+  const threshold = percentile(oiChanges, SNAPSHOT_OI_PERCENTILE);
+  if (!Number.isFinite(threshold) || threshold <= 0) {
+    return null;
+  }
+
+  return Number(threshold.toFixed(3));
+}
+
+function getFallbackThresholds(symbol: SymbolValue): CoinThresholds {
+  const liquidCoins = new Set<SymbolValue>([SYMBOLS.BTC, SYMBOLS.ETH]);
+  const volatileCoins = new Set<SymbolValue>([SYMBOLS.XRP, SYMBOLS.PIPPIN, SYMBOLS.BEAT]);
+
+  if (liquidCoins.has(symbol)) {
+    return { ...MARKET_SETTINGS.LIQUID };
+  }
+
+  if (volatileCoins.has(symbol)) {
+    return { ...MARKET_SETTINGS.VOLATILE };
+  }
+
+  return { ...MARKET_SETTINGS.MEDIUM };
 }
 
 function percentile(values: number[], p: number): number {

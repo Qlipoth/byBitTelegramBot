@@ -1,5 +1,6 @@
 import { calculateRSI } from './analysis.js';
 import { getATR, getCandle, getHistory } from './candleBuilder.js';
+import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 
 export type AdaptiveSignal = 'LONG' | 'SHORT' | 'NONE';
 
@@ -23,19 +24,20 @@ export interface AdaptiveSignalResult {
   details: Record<string, unknown>;
 }
 
-const BB_PERIOD = 20;
-const BB_STD = 2;
-const EMA_PERIOD = 50;
-const RSI_LONG_PERIOD = 200;
-const RSI_NEUTRAL = 50;
-const RSI_DEADBAND = 5;
-const SIGNAL_THRESHOLD = 65;
-const SCORE_GAP = 10;
-const MIN_BAND_DISTANCE = 0.004;
-const EMA_TREND_TOLERANCE = 0.002;
-const CLUSTER_ATR_FACTOR = 0.3;
-const BAND_SLIPPAGE_TOLERANCE = 0.0015;
-const DEFAULT_SUPPORTED = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'];
+const adaptiveConfig = STRATEGY_CONFIG.adaptiveBollinger;
+const BB_PERIOD = adaptiveConfig.bbPeriod;
+const BB_STD = adaptiveConfig.bbStd;
+const EMA_PERIOD = adaptiveConfig.emaPeriod;
+const RSI_LONG_PERIOD = adaptiveConfig.rsiLongPeriod;
+const RSI_NEUTRAL = adaptiveConfig.rsiNeutral;
+const RSI_DEADBAND = adaptiveConfig.rsiDeadband;
+const SIGNAL_THRESHOLD = adaptiveConfig.signalThreshold;
+const SCORE_GAP = adaptiveConfig.scoreGap;
+const MIN_BAND_DISTANCE = adaptiveConfig.minBandDistance;
+const EMA_TREND_TOLERANCE = adaptiveConfig.emaTrendTolerance;
+const CLUSTER_ATR_FACTOR = adaptiveConfig.clusterAtrFactor;
+const BAND_SLIPPAGE_TOLERANCE = adaptiveConfig.bandSlippageTolerance;
+const DEFAULT_SUPPORTED = adaptiveConfig.supportedSymbols;
 
 function sma(v: number[]) {
   return v.reduce((a, b) => a + b, 0) / v.length;
