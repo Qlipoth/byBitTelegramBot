@@ -1,7 +1,8 @@
 // src/market/fsm.ts
 import { tradingState } from '../core/tradingState.js';
 import type { MarketSnapshot } from './types.js';
-import { BASE_IMPULSE_THRESHOLDS } from './constants.market.js';
+import type { WatcherLogger } from './logging.js';
+import { getWatcherLogger } from './logging.js';
 
 export type TradeSide = 'LONG' | 'SHORT';
 
@@ -76,8 +77,10 @@ export type FsmAction =
 
 export function fsmStep(
   fsm: FSMContext,
-  input: { signal: string; confirmed: boolean; now: number; exitSignal: boolean }
+  input: { signal: string; confirmed: boolean; now: number; exitSignal: boolean },
+  log?: WatcherLogger
 ): { action: FsmAction } {
+  const logger = getWatcherLogger(log);
   const { signal, confirmed, now, exitSignal } = input;
 
   if (!tradingState.isEnabled()) {
@@ -91,7 +94,7 @@ export function fsmStep(
       }
       // Принимаем как трендовые (LONG/SHORT), так и флетовые сигналы (LONG_RANGE)
       if (signal.includes('LONG') || signal.includes('SHORT')) {
-        console.log(`[FSM] Переход в состояние SETUP. Сигнал: ${signal}`);
+        logger(`[FSM] Переход в состояние SETUP. Сигнал: ${signal}`);
         fsm.state = 'SETUP';
         fsm.side = signal.includes('LONG') ? 'LONG' : 'SHORT';
         fsm.setupAt = now;
@@ -102,14 +105,14 @@ export function fsmStep(
     case 'SETUP':
       // Если сигнал исчез или сменил полярность - отмена
       if (!signal.includes(fsm.side || '')) {
-        console.log('[FSM] Отмена SETUP: сигнал исчез или изменил полярность');
+        logger('[FSM] Отмена SETUP: сигнал исчез или изменил полярность');
         fsm.state = 'IDLE';
         fsm.side = null;
         return { action: 'CANCEL_SETUP' };
       }
       // Если долго нет подтверждения - таймаут
       if (now - (fsm.setupAt || 0) > CONFIG.MAX_SETUP_DURATION) {
-        console.log('[FSM] Таймаут SETUP: превышено максимальное время ожидания подтверждения');
+        logger('[FSM] Таймаут SETUP: превышено максимальное время ожидания подтверждения');
         fsm.state = 'IDLE';
         fsm.side = null;
         return { action: 'TIMEOUT_SETUP' };
@@ -118,7 +121,7 @@ export function fsmStep(
       // КЛЮЧЕВОЕ ИЗМЕНЕНИЕ:
       // Мы переходим в OPEN только если confirmEntry выдал true
       if (confirmed) {
-        console.log(`[FSM] Переход в состояние OPEN. Сторона: ${fsm.side}`);
+        logger(`[FSM] Переход в состояние OPEN. Сторона: ${fsm.side}`);
         fsm.state = 'OPEN';
         fsm.openedAt = now;
         return { action: 'ENTER_MARKET' };
@@ -132,7 +135,7 @@ export function fsmStep(
 
       // Теперь exitSignal включает в себя фазу Blow-off и противоположный Score
       if (exitSignal || timeInPosition > CONFIG.MAX_POSITION_DURATION) {
-        console.log(
+        logger(
           `[FSM] Переход в состояние EXIT. Причина: ${exitSignal ? 'сигнал на выход' : 'превышено максимальное время удержания'}`
         );
         fsm.state = 'EXIT';
@@ -141,7 +144,7 @@ export function fsmStep(
       return { action: 'HOLD' };
 
     case 'EXIT':
-      console.log('[FSM] Возврат в состояние IDLE. Очистка контекста');
+      logger('[FSM] Возврат в состояние IDLE. Очистка контекста');
       fsm.state = 'IDLE';
       fsm.lastExitAt = now;
       fsm.side = null;
@@ -149,7 +152,7 @@ export function fsmStep(
       return { action: 'CLEANUP' };
 
     default:
-      console.log('[FSM] Сброс в состояние IDLE по умолчанию');
+      logger('[FSM] Сброс в состояние IDLE по умолчанию');
       fsm.state = 'IDLE';
       return { action: 'RESET' };
   }

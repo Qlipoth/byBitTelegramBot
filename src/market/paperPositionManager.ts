@@ -1,5 +1,7 @@
 import type { MarketSnapshot } from './types.js';
 import { VIRTUAL_BALANCE_USD } from './constants.market.js';
+import type { WatcherLogger } from './logging.js';
+import { getWatcherLogger } from './logging.js';
 
 export type PaperSide = 'LONG' | 'SHORT';
 
@@ -42,18 +44,20 @@ const closedPositions: ClosedPaperPosition[] = [];
 export function calculatePositionSizing(
   balance: number,
   entryPrice: number,
-  stopPrice: number
+  stopPrice: number,
+  log?: WatcherLogger
 ): { sizeUsd: number; stopPct: number } | null {
-  console.log(
+  const logger = getWatcherLogger(log);
+  logger(
     `[calculatePositionSizing] Input - balance: ${balance}, entryPrice: ${entryPrice}, stopPrice: ${stopPrice}`
   );
 
   const stopPct = Math.abs(entryPrice - stopPrice) / entryPrice;
-  console.log(`[calculatePositionSizing] Calculated stopPct: ${stopPct}`);
+  logger(`[calculatePositionSizing] Calculated stopPct: ${stopPct}`);
 
   // 1️⃣ Валидация стопа
   if (stopPct <= 0 || stopPct > MAX_STOP_PCT) {
-    console.log(
+    logger(
       `[calculatePositionSizing] ❌ Invalid stopPct: ${stopPct} (must be between 0 and ${MAX_STOP_PCT})`
     );
     return null;
@@ -61,12 +65,12 @@ export function calculatePositionSizing(
 
   // 2️⃣ Учет комиссии в риске
   const maxPriceRiskPct = RISK_PER_TRADE - TOTAL_FEE_PCT;
-  console.log(
+  logger(
     `[calculatePositionSizing] maxPriceRiskPct: ${maxPriceRiskPct} (RISK_PER_TRADE: ${RISK_PER_TRADE}, TOTAL_FEE_PCT: ${TOTAL_FEE_PCT})`
   );
 
   if (maxPriceRiskPct <= 0) {
-    console.log(
+    logger(
       `[calculatePositionSizing] ❌ Invalid risk parameters: maxPriceRiskPct=${maxPriceRiskPct}, stopPct=${stopPct}`
     );
     return null;
@@ -74,12 +78,12 @@ export function calculatePositionSizing(
 
   // 3️⃣ Защита от ликвидации (cross + x10)
   const liquidationBufferPct = (1 / LEVERAGE) * 0.8; // ~8%
-  console.log(
+  logger(
     `[calculatePositionSizing] liquidationBufferPct: ${liquidationBufferPct} (LEVERAGE: ${LEVERAGE})`
   );
 
   if (stopPct >= liquidationBufferPct) {
-    console.log(
+    logger(
       `[calculatePositionSizing] ❌ Stop too close to liquidation: stopPct=${stopPct}, liquidationBufferPct=${liquidationBufferPct}`
     );
     return null;
@@ -88,7 +92,7 @@ export function calculatePositionSizing(
   // 4️⃣ Размер позиции
   const riskBase = Math.min(balance, VIRTUAL_BALANCE_USD);
   const sizeUsd = (riskBase * maxPriceRiskPct) / stopPct;
-  console.log(
+  logger(
     `[calculatePositionSizing] Calculated sizeUsd: ${sizeUsd} (balance: ${balance}, maxPriceRiskPct: ${maxPriceRiskPct}, stopPct: ${stopPct})`
   );
   if (sizeUsd < MIN_POSITION_USD) return null;
@@ -106,17 +110,19 @@ export function openPaperPosition(params: {
   stopPrice: number | null;
   balance: number;
   now: number;
+  log?: WatcherLogger;
 }): boolean {
-  const { symbol, side, price, stopPrice, balance, now } = params;
+  const { symbol, side, price, stopPrice, balance, now, log } = params;
+  const logger = getWatcherLogger(log);
 
   if (!balance) {
-    console.log('Нулевой баланс!');
+    logger('Нулевой баланс!');
     return false;
   }
 
   if (activePositions.has(symbol) || !stopPrice) return false;
 
-  const sizing = calculatePositionSizing(balance, price, stopPrice);
+  const sizing = calculatePositionSizing(balance, price, stopPrice, log);
   if (!sizing) return false;
 
   const { sizeUsd, stopPct } = sizing;
@@ -136,7 +142,7 @@ export function openPaperPosition(params: {
     entryTime: now,
   });
 
-  console.log(
+  logger(
     `🚀 [${symbol}] OPEN ${side} | size=$${sizeUsd.toFixed(2)} | SL=${stopPrice.toFixed(
       6
     )} | TP=${takeProfit.toFixed(6)}`
@@ -149,7 +155,14 @@ export function openPaperPosition(params: {
 // Close position
 // =====================
 
-export function closePaperPosition(symbol: string, price: number, now: number, reason = 'MANUAL') {
+export function closePaperPosition(
+  symbol: string,
+  price: number,
+  now: number,
+  reason = 'MANUAL',
+  log?: WatcherLogger
+) {
+  const logger = getWatcherLogger(log);
   const pos = activePositions.get(symbol);
   if (!pos) return;
 
@@ -171,10 +184,15 @@ export function closePaperPosition(symbol: string, price: number, now: number, r
   activePositions.delete(symbol);
 
   const emoji = pnlNet > 0 ? '💰' : '🛑';
-  console.log(`${emoji} [${symbol}] CLOSE | PnL: ${pnlNet.toFixed(2)}% | ${reason}`);
+  logger(`${emoji} [${symbol}] CLOSE | PnL: ${pnlNet.toFixed(2)}% | ${reason}`);
 }
 
-export function updateAndCheckExit(symbol: string, currentPrice: number, now: number): boolean {
+export function updateAndCheckExit(
+  symbol: string,
+  currentPrice: number,
+  now: number,
+  log?: WatcherLogger
+): boolean {
   const pos = activePositions.get(symbol);
   if (!pos) return false;
 
@@ -185,7 +203,7 @@ export function updateAndCheckExit(symbol: string, currentPrice: number, now: nu
   const hitTake = isLong ? currentPrice >= pos.takeProfit : currentPrice <= pos.takeProfit;
 
   if (hitStop || hitTake) {
-    closePaperPosition(symbol, currentPrice, now, hitStop ? 'STOP' : 'TAKE');
+    closePaperPosition(symbol, currentPrice, now, hitStop ? 'STOP' : 'TAKE', log);
     return true;
   }
 

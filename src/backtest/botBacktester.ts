@@ -27,6 +27,7 @@ import {
   PRIORITY_COINS,
 } from '../market/constants.market.js';
 import { parseMonthSelections } from './monthSelection.js';
+import type { WatcherLogWriter } from '../market/logging.js';
 
 interface BacktestRunParams {
   symbol: string;
@@ -246,6 +247,27 @@ async function runBotBacktest(params: BacktestRunParams) {
     process.platform === 'win32'
       ? 'C:\\tmp'
       : process.env.TMPDIR || process.env.TEMP || process.env.TMP || '/tmp';
+  const watcherLogPath = path.join(
+    tempDir,
+    `watcher-log-${params.symbol}-${params.startTime}-${params.endTime}.log`
+  );
+  console.log(`[WATCHER_LOG] Writing watcher telemetry to ${watcherLogPath}`);
+  await fs.mkdir(path.dirname(watcherLogPath), { recursive: true });
+  try {
+    await fs.rm(watcherLogPath, { force: true });
+  } catch {
+    // ignore
+  }
+  const watcherLogStream = createWriteStream(watcherLogPath, { flags: 'w' });
+
+  const writeWatcherLog: WatcherLogWriter = (line: string) => {
+    try {
+      watcherLogStream.write(`${line}\n`);
+    } catch (err) {
+      console.error('[WATCHER_LOG] Failed to write entry:', err);
+    }
+  };
+
   const phaseLogPath = path.join(tempDir, `phases-${params.symbol}.jsonl`);
   console.log(`[PHASE_LOG] Writing detectMarketPhase telemetry to ${phaseLogPath}`);
   await fs.mkdir(path.dirname(phaseLogPath), { recursive: true });
@@ -262,97 +284,111 @@ async function runBotBacktest(params: BacktestRunParams) {
     }
   };
 
-  try {
-    await startMarketWatcher(params.symbol, console.log, {
-      tradeExecutor,
-      warmupSnapshots: recordedSnapshots.slice(0, warmupCount),
-      snapshotProvider: async () => {
-        if (cursor >= recordedSnapshots.length) return null;
-        const snap = recordedSnapshots[cursor]!;
-        const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
-        console.log(
-          `[SNAP/BACKTEST] ${params.symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
-        );
-        ingestHistoricalCandle(params.symbol, candles[cursor]!);
-        cursor++;
-        return snap;
-      },
-      balanceProvider: async () => tradeExecutor.getBalance(),
-      cvdProvider: (_symbol, minutes, referenceTs) => {
-        const recordedValue = getRecordedCvdValue(snapshotByTimestamp.get(referenceTs), minutes);
-        if (typeof recordedValue === 'number') {
-          return recordedValue;
-        }
-        throw new Error(
-          `[BACKTEST] Missing ${minutes}m CVD in snapshots for ${params.symbol} @ ${referenceTs}`
-        );
-      },
-      intervalMs: 0,
-      enableRealtime: false,
-      entryMode: 'classic',
-      phaseLogger,
-    });
-  } finally {
-    await new Promise<void>(resolve => phaseLogStream.end(resolve));
-  }
+  const closePhaseLog = () => new Promise<void>(resolve => phaseLogStream.end(resolve));
+  const closeWatcherLog = () => new Promise<void>(resolve => watcherLogStream.end(resolve));
 
-  const stats = tradeExecutor.getStats();
-  const statsPayload = {
-    generatedAt: dayjs().toISOString(),
-    symbol: params.symbol,
-    startTime: params.startTime,
-    endTime: params.endTime,
-    snapshotFilePath: params.snapshotFilePath,
-    ...stats,
-  };
-  const statsPath = path.join(
-    tempDir,
-    `bot-backtest-stats-${params.symbol}-${params.startTime}-${params.endTime}.json`
-  );
   try {
-    await fs.mkdir(path.dirname(statsPath), { recursive: true });
-    await fs.writeFile(statsPath, JSON.stringify(statsPayload, null, 2));
-    console.log(`[BACKTEST] Stats written to ${statsPath}`);
-  } catch (err) {
-    console.error('[BACKTEST] Failed to write stats file:', err);
-  }
-  console.log('================ BOT BACKTEST REPORT ================');
-  console.log(`Symbol: ${params.symbol}`);
-  console.log(`Source file: ${params.snapshotFilePath}`);
-  console.log(`Trades: ${stats.trades}`);
-  console.log(`Winrate: ${stats.winrate.toFixed(2)}% (W:${stats.wins} / L:${stats.losses})`);
-  console.log(`Net PnL: ${stats.pnlTotal.toFixed(2)} USD`);
-  console.log(`Final Balance: ${stats.balance.toFixed(2)} USD`);
-  console.log(`Max Drawdown: ${stats.maxDrawdown.toFixed(2)} USD`);
-  if (stats.closedTrades.length) {
-    console.log('---------------- TRADE DETAILS ----------------');
-    stats.closedTrades.forEach((trade, idx) => {
-      const opened = dayjs(trade.entryTime).format('YYYY-MM-DD HH:mm:ss');
-      const closed = dayjs(trade.exitTime).format('YYYY-MM-DD HH:mm:ss');
-      const pnlUsd = trade.pnlUsd.toFixed(2);
-      const pnlPct = trade.pnlPct.toFixed(2);
-      const pnlGrossUsd = trade.pnlGrossUsd.toFixed(2);
-      const pnlGrossPct = trade.pnlGrossPct.toFixed(2);
-      const feesUsd = trade.feesUsd.toFixed(2);
-      const entryPrice = trade.entryPrice.toFixed(4);
-      const exitPrice = trade.exitPrice.toFixed(4);
-      const qty = trade.qty.toFixed(4);
-      const longScore = trade.entryMeta?.longScore ?? null;
-      const shortScore = trade.entryMeta?.shortScore ?? null;
-      const scoreStr =
-        longScore !== null && shortScore !== null ? `L:${longScore} | S:${shortScore}` : 'n/a';
-      const entrySignalMeta = trade.entryMeta?.entrySignal ?? 'n/a';
-      const signalMeta = trade.entryMeta?.signal ?? 'n/a';
-      console.log(
-        `${idx + 1}. ${trade.symbol} ${trade.side} | Open:${opened} Close:${closed} | ` +
-          `Entry:${entryPrice} Exit:${exitPrice} Qty:${qty} | ` +
-          `Gross: ${pnlGrossUsd} USD (${pnlGrossPct}%) | Fees: ${feesUsd} USD | ` +
-          `Net: ${pnlUsd} USD (${pnlPct}%) | Reason: ${trade.reason} | Score: ${scoreStr} | ` +
-          `EntrySignal: ${entrySignalMeta} | Signal: ${signalMeta}`
-      );
-    });
-  } else {
-    console.log('No trades were executed during this backtest window.');
+    try {
+      await startMarketWatcher(params.symbol, () => {}, {
+        tradeExecutor,
+        warmupSnapshots: recordedSnapshots.slice(0, warmupCount),
+        snapshotProvider: async () => {
+          if (cursor >= recordedSnapshots.length) return null;
+          const snap = recordedSnapshots[cursor]!;
+          const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+          writeWatcherLog(
+            `[SNAP/BACKTEST] ${params.symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`
+          );
+          ingestHistoricalCandle(params.symbol, candles[cursor]!);
+          cursor++;
+          return snap;
+        },
+        balanceProvider: async () => tradeExecutor.getBalance(),
+        cvdProvider: (_symbol, minutes, referenceTs) => {
+          const recordedValue = getRecordedCvdValue(snapshotByTimestamp.get(referenceTs), minutes);
+          if (typeof recordedValue === 'number') {
+            return recordedValue;
+          }
+          throw new Error(
+            `[BACKTEST] Missing ${minutes}m CVD in snapshots for ${params.symbol} @ ${referenceTs}`
+          );
+        },
+        intervalMs: 0,
+        enableRealtime: false,
+        entryMode: 'classic',
+        phaseLogger,
+        logWriter: writeWatcherLog,
+      });
+    } finally {
+      await closePhaseLog();
+    }
+
+    const stats = tradeExecutor.getStats();
+    const statsPayload = {
+      generatedAt: dayjs().toISOString(),
+      symbol: params.symbol,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      snapshotFilePath: params.snapshotFilePath,
+      ...stats,
+    };
+    const statsPath = path.join(
+      tempDir,
+      `bot-backtest-stats-${params.symbol}-${params.startTime}-${params.endTime}.json`
+    );
+    try {
+      await fs.mkdir(path.dirname(statsPath), { recursive: true });
+      await fs.writeFile(statsPath, JSON.stringify(statsPayload, null, 2));
+      console.log(`[BACKTEST] Stats written to ${statsPath}`);
+    } catch (err) {
+      console.error('[BACKTEST] Failed to write stats file:', err);
+    }
+
+    const report = (line: string) => {
+      console.log(line);
+      writeWatcherLog(line);
+    };
+
+    report('================ BOT BACKTEST REPORT ================');
+    report(`Symbol: ${params.symbol}`);
+    report(`Source file: ${params.snapshotFilePath}`);
+    report(`Trades: ${stats.trades}`);
+    report(`Winrate: ${stats.winrate.toFixed(2)}% (W:${stats.wins} / L:${stats.losses})`);
+    report(`Net PnL: ${stats.pnlTotal.toFixed(2)} USD`);
+    report(`Final Balance: ${stats.balance.toFixed(2)} USD`);
+    report(`Max Drawdown: ${stats.maxDrawdown.toFixed(2)} USD`);
+    if (stats.closedTrades.length) {
+      report('---------------- TRADE DETAILS ----------------');
+      stats.closedTrades.forEach((trade, idx) => {
+        const opened = dayjs(trade.entryTime).format('YYYY-MM-DD HH:mm:ss');
+        const closed = dayjs(trade.exitTime).format('YYYY-MM-DD HH:mm:ss');
+        const pnlUsd = trade.pnlUsd.toFixed(2);
+        const pnlPct = trade.pnlPct.toFixed(2);
+        const pnlGrossUsd = trade.pnlGrossUsd.toFixed(2);
+        const pnlGrossPct = trade.pnlGrossPct.toFixed(2);
+        const feesUsd = trade.feesUsd.toFixed(2);
+        const entryPrice = trade.entryPrice.toFixed(4);
+        const exitPrice = trade.exitPrice.toFixed(4);
+        const qty = trade.qty.toFixed(4);
+        const longScore = trade.entryMeta?.longScore ?? null;
+        const shortScore = trade.entryMeta?.shortScore ?? null;
+        const scoreStr =
+          longScore !== null && shortScore !== null ? `L:${longScore} | S:${shortScore}` : 'n/a';
+        const entrySignalMeta = trade.entryMeta?.entrySignal ?? 'n/a';
+        const signalMeta = trade.entryMeta?.signal ?? 'n/a';
+        report(
+          `${idx + 1}. ${trade.symbol} ${trade.side} | Open:${opened} Close:${closed} | ` +
+            `Entry:${entryPrice} Exit:${exitPrice} Qty:${qty} | ` +
+            `Gross: ${pnlGrossUsd} USD (${pnlGrossPct}%) | Fees: ${feesUsd} USD | ` +
+            `Net: ${pnlUsd} USD (${pnlPct}%) | Reason: ${trade.reason} | Score: ${scoreStr} | ` +
+            `EntrySignal: ${entrySignalMeta} | Signal: ${signalMeta}`
+        );
+      });
+    } else {
+      report('No trades were executed during this backtest window.');
+    }
+  } finally {
+    await closeWatcherLog();
   }
 }
 

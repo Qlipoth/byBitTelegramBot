@@ -12,6 +12,8 @@ import type {
 } from './types.js';
 import { getCSI, getCvdThreshold } from './candleBuilder.js';
 import { getSnapshots } from './snapshotStore.js';
+import type { WatcherLogger } from './logging.js';
+import { getWatcherLogger } from './logging.js';
 
 /**
  * Formats funding rate into a human-readable string
@@ -20,8 +22,6 @@ import { getSnapshots } from './snapshotStore.js';
  */
 export function formatFundingRate(rate?: number): string {
   const safeRate = rate ?? 0;
-
-  console.log(rate, safeRate);
 
   if (safeRate > 0) {
     return `${(safeRate * 100).toFixed(4)}% (Лонги платят шортам)`;
@@ -34,20 +34,24 @@ export function formatFundingRate(rate?: number): string {
   return `0.0000% (Нейтрально)`;
 }
 
-export function calculateEntryScores({
-  state,
-  delta,
-  delta15m,
-  delta30m,
-  delta5m,
-  snap,
-  cvd3m,
-  cvd15m,
-  rsi,
-  impulse, // Это наши { PRICE_SURGE_PCT, VOL_SURGE_CVD }
-  isBull,
-  isBear,
-}: EntryScoresParams): EntryScores {
+export function calculateEntryScores(
+  {
+    state,
+    delta,
+    delta15m,
+    delta30m,
+    delta5m,
+    snap,
+    cvd3m,
+    cvd15m,
+    rsi,
+    impulse, // Это наши { PRICE_SURGE_PCT, VOL_SURGE_CVD }
+    isBull,
+    isBear,
+  }: EntryScoresParams,
+  log?: WatcherLogger
+): EntryScores {
+  const logger = getWatcherLogger(log);
   let longScore = 0;
   let shortScore = 0;
 
@@ -65,7 +69,7 @@ export function calculateEntryScores({
       shortScore += amount;
     }
     const sign = amount >= 0 ? '+' : '';
-    console.log(
+    logger(
       `[ENTRY_SCORE][${component}] ${side} ${sign}${amount.toFixed(2)}${
         context ? ` | ${context}` : ''
       }`
@@ -112,7 +116,7 @@ export function calculateEntryScores({
     oiLong -= penalty;
     oiShort -= penalty;
     // Можно добавить лог, чтобы видеть это в консоли
-    console.log(`[OI_PENALTY] OI is falling (${oi15.toFixed(2)}%), reducing confidence`);
+    logger(`[OI_PENALTY] OI is falling (${oi15.toFixed(2)}%), reducing confidence`);
   }
 
   const oiLongBonus = Math.min(oiLong, 25);
@@ -249,7 +253,7 @@ export function calculateEntryScores({
   const knifeThreshold = impulse.PRICE_SURGE_PCT * 3;
   if (longScore > 0 && price5m < -knifeThreshold) {
     longScore -= 30; // Сбрасываем скор, чтобы не войти
-    console.log(`[SAFETY] Falling knife detected (5m: ${price5m.toFixed(2)}%), penalty -30`);
+    logger(`[SAFETY] Falling knife detected (5m: ${price5m.toFixed(2)}%), penalty -30`);
   }
 
   // Clamp
@@ -260,25 +264,29 @@ export function calculateEntryScores({
   if (longScore >= 65) entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
   else if (shortScore >= 65) entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
 
-  console.log(
+  logger(
     `[ENTRY_SCORE][TOTAL] 🟢LONG=${longScore} 🔴SHORT=${shortScore} | signal=${entrySignal}`
   );
 
   return { longScore, shortScore, entrySignal, details };
 }
 
-export function getSignalAgreement({
-  longScore,
-  shortScore,
-  phase,
-  pricePercentChange,
-  moveThreshold,
-  cvd15m,
-  cvdThreshold,
-  fundingRate,
-  rsi,
-  symbol,
-}: SignalAgreementParams) {
+export function getSignalAgreement(
+  {
+    longScore,
+    shortScore,
+    phase,
+    pricePercentChange,
+    moveThreshold,
+    cvd15m,
+    cvdThreshold,
+    fundingRate,
+    rsi,
+    symbol,
+  }: SignalAgreementParams,
+  log?: WatcherLogger
+) {
+  const logger = getWatcherLogger(log);
   const isSol = symbol === SYMBOLS.SOL;
   const tuning = {
     minLongScore: MIN_SCORE + (isSol ? 4 : 0),
@@ -312,7 +320,7 @@ export function getSignalAgreement({
   // }
   // 1️⃣ Блокировка при кульминации
   if (phase === 'blowoff') {
-    console.log(`[SIGNAL_AGREEMENT] Blowoff phase detected, returning NONE`);
+    logger(`[SIGNAL_AGREEMENT] Blowoff phase detected, returning NONE`);
     return 'NONE';
   }
 
@@ -330,7 +338,7 @@ export function getSignalAgreement({
       cvd15m > cvdThreshold * tuning.trendCvdFactor &&
       fundingRate <= 0.00025
     ) {
-      console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION LONG`);
+      logger(`[SIGNAL_AGREEMENT] TREND CONTINUATION LONG`);
       return 'LONG';
     }
 
@@ -344,7 +352,7 @@ export function getSignalAgreement({
       cvd15m < -cvdThreshold * tuning.trendCvdFactor &&
       fundingRate >= -0.00025
     ) {
-      console.log(`[SIGNAL_AGREEMENT] TREND CONTINUATION SHORT`);
+      logger(`[SIGNAL_AGREEMENT] TREND CONTINUATION SHORT`);
       return 'SHORT';
     }
   }
@@ -354,7 +362,7 @@ export function getSignalAgreement({
   // =====================
   if (phase === 'trend' || phase === 'accumulation' || phase === 'distribution') {
     if (Math.abs(pricePercentChange) < moveThreshold * tuning.breakoutMoveFactor) {
-      console.log(
+      logger(
         `[SIGNAL_AGREEMENT] Price change ${pricePercentChange}% < moveThreshold ${moveThreshold}%, returning NONE`
       );
       return 'NONE';
@@ -366,7 +374,7 @@ export function getSignalAgreement({
       cvd15m > cvdThreshold * tuning.breakoutCvdFactor &&
       fundingRate <= 0.0002
     ) {
-      console.log(`[SIGNAL_AGREEMENT] BREAKOUT LONG`);
+      logger(`[SIGNAL_AGREEMENT] BREAKOUT LONG`);
       return 'LONG';
     }
 
@@ -376,7 +384,7 @@ export function getSignalAgreement({
       cvd15m < -cvdThreshold * tuning.breakoutCvdFactor &&
       fundingRate >= -0.0002
     ) {
-      console.log(`[SIGNAL_AGREEMENT] BREAKOUT SHORT`);
+      logger(`[SIGNAL_AGREEMENT] BREAKOUT SHORT`);
       return 'SHORT';
     }
   }
@@ -393,7 +401,7 @@ export function getSignalAgreement({
       Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m > 0
     ) {
-      console.log(`[SIGNAL_AGREEMENT] RANGE LONG`);
+      logger(`[SIGNAL_AGREEMENT] RANGE LONG`);
       return 'LONG';
     }
 
@@ -405,24 +413,22 @@ export function getSignalAgreement({
       Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m < 0
     ) {
-      console.log(`[SIGNAL_AGREEMENT] RANGE SHORT`);
+      logger(`[SIGNAL_AGREEMENT] RANGE SHORT`);
       return 'SHORT';
     }
   }
 
-  console.log(
+  logger(
     `[SIGNAL_AGREEMENT] No signal matched: phase=${phase}, longScore=${longScore}, shortScore=${shortScore}`
   );
   return 'NONE';
 }
 
-export function confirmEntry({
-  signal,
-  delta,
-  cvd3m,
-  phase,
-  confirmedAt,
-}: ConfirmEntryParams): boolean {
+export function confirmEntry(
+  { signal, delta, cvd3m, phase, confirmedAt }: ConfirmEntryParams,
+  log?: WatcherLogger
+): boolean {
+  const logger = getWatcherLogger(log);
   // 1. ПРОВЕРКА НАЛИЧИЯ ДАННЫХ
   if (!delta || cvd3m === undefined) return false;
 
@@ -476,7 +482,7 @@ export function confirmEntry({
   // ЛОГИРОВАНИЕ (поможет понять, почему сделка НЕ открылась)
   if (absPChange >= 0.15) {
     // Логируем только значимые попытки
-    console.log(
+    logger(
       `[CONFIRM] ${signal} | PNL: ${pChange.toFixed(3)}% | CVD: ${(cvd3m / 1000000).toFixed(2)}M | ` +
         `Dense: ${(currentDensity / 1000000).toFixed(1)} | Res: ${confirmed ? '✅' : '❌'}`
     );

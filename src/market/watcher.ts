@@ -39,6 +39,8 @@ import { realTradeManager } from './realTradeManager.js';
 import type { TradeExecutor } from './tradeExecutor.js';
 import { tradingState } from '../core/tradingState.js';
 import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
+import { createWatcherLogger } from './logging.js';
+import type { WatcherLogWriter } from './logging.js';
 
 // symbol -> состояние (фаза, флаги, последний алерт)
 const stateBySymbol = new Map<string, MarketState>();
@@ -200,6 +202,7 @@ interface WatcherOptions {
   entryMode?: 'adaptive' | 'classic';
   cvdProvider?: (symbol: string, minutes: number, referenceTs: number) => number;
   phaseLogger?: (event: PhaseLogEvent) => void;
+  logWriter?: WatcherLogWriter;
 }
 
 // =====================
@@ -255,6 +258,14 @@ export async function startMarketWatcher(
   const entryMode = options.entryMode ?? 'classic';
   const useSnapshotTime = options.enableRealtime === false;
   const coinThresholds = selectCoinThresholds(symbol as SymbolValue);
+  const scopedLogger = createWatcherLogger(options.logWriter, `[${symbol}]`);
+  const log = (...args: unknown[]) => {
+    if (options.logWriter) {
+      scopedLogger(...args);
+    } else {
+      console.log(...args);
+    }
+  };
   type SnapshotThresholds = {
     moveThreshold: number;
     cvdThreshold: number;
@@ -337,7 +348,7 @@ export async function startMarketWatcher(
         cvd30m,
       });
       const snapTimeLabel = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
-      console.log(`[SNAP] ${symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`);
+      log(`[SNAP] ${symbol} @ ${snapTimeLabel} (ts=${snap.timestamp}) price=${snap.price}`);
       saveSnapshot(snap);
       logData.cvd = {
         cvd1m,
@@ -544,21 +555,20 @@ export async function startMarketWatcher(
 
       logData.scores = { longScore, shortScore };
       logData.details = details;
-      console.log(`${symbol}: `, '0) entrySignal:', entrySignal, JSON.stringify(details));
+      log(`${symbol}: 0) entrySignal: ${entrySignal} ${JSON.stringify(details)}`);
 
       // =====================
       // Signal Agreement Check
       // =====================
       logData.signal = signal;
 
-      console.log('==============================================');
-      console.log('0.1) signal is:', signal);
+      log(`0.1) signal is: ${signal}`);
 
       logData.fsm = {
         state: fsm.state,
         side: fsm.side,
       };
-      console.log('1) FSM:', JSON.stringify(fsm));
+      log(`1) FSM: ${JSON.stringify(fsm)}`);
       let confirmed = false;
       // Step the FSM
 
@@ -577,10 +587,10 @@ export async function startMarketWatcher(
           phase: state.phase,
           confirmedAt: snap.timestamp,
         });
-        console.log('2) confirmed value:', confirmed);
+        log(`2) confirmed value: ${confirmed}`);
         if (confirmed) {
           const confirmTime = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
-          console.log(
+          log(
             `[CONFIRM_ENTRY] timestamp=${confirmTime} (ts=${snap.timestamp}) | price=${snap.price}`
           );
         }
@@ -600,7 +610,7 @@ export async function startMarketWatcher(
 
       const currentPos = tradeExecutor.getPosition(symbol);
 
-      console.log('3) currentPos:', JSON.stringify(currentPos));
+      log(`3) currentPos: ${JSON.stringify(currentPos)}`);
 
       const atr = computeSnapshotATR(snaps, ATR_PERIOD);
       const csi = computeSnapshotCSI(snaps);
@@ -646,7 +656,7 @@ export async function startMarketWatcher(
 
       logEvent(logData);
 
-      console.log('4) ACTION IS:', JSON.stringify(action));
+      log(`4) ACTION IS: ${JSON.stringify(action)}`);
       // =====================
       // Actions
       // =====================
@@ -655,7 +665,7 @@ export async function startMarketWatcher(
       // Важно: проверяем экшен ENTER_MARKET из нашего нового FSM
       if (action === 'ENTER_MARKET' && !hasExposure) {
         if (!tradingState.isEnabled()) {
-          console.log('[WATCHER] Trading disabled — skip ENTER_MARKET');
+          log('[WATCHER] Trading disabled — skip ENTER_MARKET');
           logData.entrySkipReason = 'TRADING_DISABLED';
           logEvent(logData);
           return; // ← выход ТОЛЬКО из текущей итерации символа
@@ -666,7 +676,7 @@ export async function startMarketWatcher(
         const stopPrice = findStopLossLevel(snaps, fsm.side!, state.phase === 'trend' ? 15 : 30);
 
         if (!stopPrice) {
-          console.log('Не сформирован стоплосс!');
+          log('Не сформирован стоплосс!');
           logData.entrySkipReason = 'NO_STOPLOSS';
           logEvent(logData);
           return;
@@ -691,7 +701,7 @@ export async function startMarketWatcher(
 
         if (success) {
           const entryTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
-          console.log(
+          log(
             `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance} | Time: ${entryTimeStr}`
           );
           onAlert(
@@ -749,7 +759,7 @@ export async function startMarketWatcher(
         const entryTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
         const closeTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
 
-        console.log(
+        log(
           `[TRADE] ⚪ EXIT ${pos?.side ?? 'UNKNOWN'} for ${symbol} | PnL: ${pnl}% | Reason: ${effectiveExitReason} | Price: ${snap.price}` +
             ` | Opened: ${entryTimeStr} | Closed: ${closeTimeStr}`
         );
@@ -764,10 +774,9 @@ export async function startMarketWatcher(
 
       // 4. ОБРАБОТКА ОТМЕНЫ (Если сетап не подтвердился)
       if (['CANCEL_SETUP', 'TIMEOUT_SETUP', 'CANCEL_CONFIRM'].includes(action)) {
-        console.log(`[FSM] Setup cancelled: ${action}`);
+        log(`[FSM] Setup cancelled: ${action}`);
         // Можно не слать алерты на каждое затишье, чтобы не спамить в Telegram
       }
-      console.log('==============================================');
       return true;
     } catch (err) {
       console.error(`❌ Market watcher error (${symbol}):`, err);
