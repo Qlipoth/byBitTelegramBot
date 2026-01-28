@@ -139,33 +139,43 @@ function legacyPhaseDetection(params: {
   const p5 = delta5m.priceChangePct ?? 0;
   const trendDirection = Math.sign(p30);
 
+  // --- Re-usable conditions ---
   const hasFreshMomentum =
     (Math.sign(p15) === trendDirection && Math.abs(p15) >= settings.moveThreshold * 0.3) ||
     (Math.sign(p5) === trendDirection && Math.abs(p5) >= settings.moveThreshold * 0.2);
-  const cvdSupportsMove =
-    Math.abs(cvd30m) <= settings.cvdThreshold * 1.2 || Math.sign(cvd30m) === trendDirection;
 
   const isStrongMove = Math.abs(p30) >= settings.moveThreshold;
-  const moveOvershoot = Math.abs(p30) >= settings.moveThreshold * 1.35;
   const strongOiExpansion = Math.abs(oi30) >= settings.oiThreshold;
   const oiExpansion15m =
     Math.sign(oi15) === Math.sign(oi30) && Math.abs(oi15) >= settings.oiThreshold * 0.6;
-  const momentumOrOi = hasFreshMomentum || oiExpansion15m;
-  const trendScore = [
-    isStrongMove,
-    strongOiExpansion,
-    cvdSupportsMove,
-    hasFreshMomentum,
-    oiExpansion15m,
-  ].filter(Boolean).length;
 
+  // Stricter CVD Check for Trend
+  const cvdConfirmsMove =
+    Math.sign(cvd30m) === trendDirection && Math.abs(cvd30m) >= settings.cvdThreshold * 0.7;
+
+  // Looser CVD check for Accumulation/Distribution
+  const cvdSupportsMove =
+    Math.abs(cvd30m) <= settings.cvdThreshold * 1.2 || Math.sign(cvd30m) === trendDirection;
+
+  // --- Trend Detection ---
+  // Score now excludes CVD, which is checked separately and is mandatory for trend.
+  const trendScore = [isStrongMove, strongOiExpansion, hasFreshMomentum, oiExpansion15m].filter(
+    Boolean
+  ).length;
+
+  // New Trend Condition: Strong move, confirmed by both OI and CVD, plus a high score.
   if (
     trendDirection !== 0 &&
-    ((isStrongMove && trendScore >= 3) || (moveOvershoot && trendScore >= 2))
+    isStrongMove &&
+    strongOiExpansion &&
+    cvdConfirmsMove &&
+    trendScore >= 3
   ) {
     return 'trend';
   }
 
+  // --- Accumulation / Distribution ---
+  const momentumOrOi = hasFreshMomentum || oiExpansion15m;
   if (
     Math.abs(p30) < settings.moveThreshold * 0.6 &&
     oi30 >= settings.oiThreshold * 0.7 &&
@@ -182,6 +192,7 @@ function legacyPhaseDetection(params: {
     return 'distribution';
   }
 
+  // --- Blowoff Detection ---
   const isExtremeMove = Math.abs(p30) >= settings.moveThreshold * 0.85;
   const isOiCollapsing = oi15 <= -settings.oiThreshold * 0.7;
   const hasReversal =

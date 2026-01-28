@@ -42,6 +42,7 @@ describe('detectMarketPhase', () => {
         delta30m: makeDelta({ priceChangePct: 1.2, oiChangePct: 0.6 }),
         delta15m: makeDelta({ priceChangePct: 0.5 }),
         delta5m: makeDelta({ priceChangePct: 0.4 }),
+        cvd30m: baseSettings.cvdThreshold,
       })
     );
 
@@ -99,7 +100,7 @@ describe('detectMarketPhase', () => {
         delta30m: makeDelta({ priceChangePct: -1.5, oiChangePct: 0.8 }),
         delta15m: makeDelta({ priceChangePct: -0.5 }),
         delta5m: makeDelta({ priceChangePct: -0.3 }),
-        cvd30m: -1000,
+        cvd30m: -baseSettings.cvdThreshold,
       })
     );
     expect(phase).toBe('trend');
@@ -169,6 +170,7 @@ describe('detectMarketPhase', () => {
           oiChangePct: baseSettings.oiThreshold,
         }),
         delta15m: makeDelta({ priceChangePct: baseSettings.moveThreshold * 0.35 }),
+        cvd30m: baseSettings.cvdThreshold,
       })
     );
     // Проверяем, включительно у нас работают пороги или нет

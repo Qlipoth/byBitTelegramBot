@@ -39,7 +39,7 @@ export const ws = new WebsocketClient({
 initCVDTracker(ws);
 
 const ONE_MINUTE_MS = 60_000;
-const DEFAULT_HISTORY_MINUTES = 60 * 24 * 130; // ~90 дней
+const DEFAULT_HISTORY_MINUTES = 60 * 24; // 1 день
 const MIN_HISTORY_MINUTES = 30;
 const MAX_HISTORY_MINUTES = 60 * 24 * 60; // 60 дней
 const MAX_KLINE_BATCH = 200; // Bybit v5 limit
