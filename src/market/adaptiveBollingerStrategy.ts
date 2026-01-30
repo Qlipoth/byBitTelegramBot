@@ -1,5 +1,12 @@
 import { calculateRSI } from './analysis.js';
-import { getATR, getCandle, getHistory } from './candleBuilder.js';
+import {
+  getATR,
+  getCandle,
+  getHistory,
+  getATR1h,
+  getCandle1h,
+  getHistory1h,
+} from './candleBuilder.js';
 import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 
 export type AdaptiveSignal = 'LONG' | 'SHORT' | 'NONE';
@@ -37,6 +44,8 @@ const MIN_BAND_DISTANCE = adaptiveConfig.minBandDistance;
 const EMA_TREND_TOLERANCE = adaptiveConfig.emaTrendTolerance;
 const CLUSTER_ATR_FACTOR = adaptiveConfig.clusterAtrFactor;
 const BAND_SLIPPAGE_TOLERANCE = adaptiveConfig.bandSlippageTolerance;
+const MAX_EMA_DISTANCE_LONG = adaptiveConfig.maxEmaDistanceForLong ?? 0.02;
+const MAX_EMA_DISTANCE_SHORT = adaptiveConfig.maxEmaDistanceForShort ?? 0.02;
 const DEFAULT_SUPPORTED = adaptiveConfig.supportedSymbols;
 
 function sma(v: number[]) {
@@ -146,7 +155,9 @@ export class AdaptiveBollingerEmaStrategy {
       return (
         ctx.close <= ctx.lower * (1 + BAND_SLIPPAGE_TOLERANCE) &&
         distancePct >= MIN_BAND_DISTANCE * 0.8 &&
-        emaBias <= -EMA_TREND_TOLERANCE
+        emaBias <= -EMA_TREND_TOLERANCE &&
+        emaBias >= -MAX_EMA_DISTANCE_LONG && // не лонг в сильном даунтренде
+        !this.isBearCluster(ctx) // не лонг при сильных красных свечах — любой стоп выбьют
       );
     }
 
@@ -154,7 +165,8 @@ export class AdaptiveBollingerEmaStrategy {
       return (
         ctx.close >= ctx.upper * (1 - BAND_SLIPPAGE_TOLERANCE) &&
         distancePct >= MIN_BAND_DISTANCE * 0.8 &&
-        emaBias >= EMA_TREND_TOLERANCE
+        emaBias >= EMA_TREND_TOLERANCE &&
+        emaBias <= MAX_EMA_DISTANCE_SHORT // не шорт в сильном аптренде
       );
     }
 
@@ -201,8 +213,15 @@ export class AdaptiveBollingerEmaStrategy {
   }
 
   private buildContext(symbol: string): BollingerContext | null {
-    const current = getCandle(symbol);
-    const history = getHistory(symbol);
+    const prefer1h = adaptiveConfig.use1hInLive === true;
+    const has1h =
+      prefer1h &&
+      getCandle1h(symbol) &&
+      getHistory1h(symbol).length >= RSI_LONG_PERIOD + BB_PERIOD;
+    const use1h = prefer1h && has1h;
+    const current = use1h ? getCandle1h(symbol) : getCandle(symbol);
+    const history = use1h ? getHistory1h(symbol) : getHistory(symbol);
+    const atr = use1h ? getATR1h(symbol) : getATR(symbol);
     if (!current || history.length < RSI_LONG_PERIOD + BB_PERIOD) return null;
 
     const closes = [...history.map(c => c.close), current.close];
@@ -219,7 +238,7 @@ export class AdaptiveBollingerEmaStrategy {
       ema: ema(closes.slice(-EMA_PERIOD), EMA_PERIOD),
       rsiLong,
       close: current.close,
-      atr: getATR(symbol),
+      atr,
       candles: history.slice(-5).map(c => ({ open: c.open, close: c.close })),
     };
   }

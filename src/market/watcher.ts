@@ -22,7 +22,9 @@ import {
   selectCoinThresholds,
 } from './utils.js';
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
-import { calculateRSI, detectTrend, detectMarketPhase } from './analysis.js';
+import { fetchBybitCandles } from '../backtest/candleLoader.js';
+import { ingest1hCandles } from './candleBuilder.js';
+import { calculateRSI, detectTrend, detectMarketPhase, detectGlobalTrend, type GlobalTrend } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type {
   IMPULSE_THRESHOLDS_CONFIG,
@@ -36,7 +38,7 @@ import { getCVDLastMinutes } from './cvdTracker.js';
 import { findStopLossLevel } from './paperPositionManager.js';
 import { logEvent } from './logger.js';
 import { realTradeManager } from './realTradeManager.js';
-import type { TradeExecutor } from './tradeExecutor.js';
+import type { TradeExecutor, TradeEntryMeta } from './tradeExecutor.js';
 import { tradingState } from '../core/tradingState.js';
 import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 import { createWatcherLogger } from './logging.js';
@@ -255,7 +257,7 @@ export async function startMarketWatcher(
   const customCvdProvider = options.cvdProvider;
   const INTERVAL = options.intervalMs ?? INTERVALS.ONE_MIN;
   const isPriorityCoin = PRIORITY_COINS.includes(symbol as any);
-  const entryMode = options.entryMode ?? 'classic';
+  const entryMode = options.entryMode ?? 'adaptive';
   const useSnapshotTime = options.enableRealtime === false;
   const coinThresholds = selectCoinThresholds(symbol as SymbolValue);
   const scopedLogger = createWatcherLogger(options.logWriter, `[${symbol}]`);
@@ -297,7 +299,12 @@ export async function startMarketWatcher(
 
   console.log(`🚀 Отслеживание рынка запущено для ${symbol}`);
 
-  const snapshots = options.warmupSnapshots ?? (await preloadMarketSnapshots(symbol));
+  // Bollinger (adaptive) — только 1h свечи, 1m прелоад не нужен; классика — полный прелоад снапшотов
+  const snapshots =
+    options.warmupSnapshots ??
+    (entryMode === 'adaptive'
+      ? []
+      : await preloadMarketSnapshots(symbol));
 
   for (const snap of snapshots) {
     const normalized = ensureSnapshotThresholds(snap);
@@ -377,12 +384,15 @@ export async function startMarketWatcher(
         fsm.openedAt = restoredPos.entryTime ?? Date.now();
       }
 
+      const habrMode = entryMode === 'adaptive' && adaptiveBollingerStrategy.isSupported(symbol);
       const snaps = getSnapshots(symbol);
-      if (snaps.length < 15) return true;
+      if (!habrMode && snaps.length < 15) return true;
+      if (habrMode && snaps.length < 2) return true; // нужен минимум 2 снапа для prev и дельт
 
       // 1m импульс — сравнение с предыдущим снапом
       const prev = snaps[snaps.length - 2];
-      const delta = compareSnapshots(snap, prev!);
+      if (!prev) return true;
+      const delta = compareSnapshots(snap, prev);
 
       // Окна для структуры
       const snaps15m = snaps.slice(-15);
@@ -393,9 +403,13 @@ export async function startMarketWatcher(
       // а не 3–5 минут после рестарта.
       const has30m = snaps30m.length >= 30;
 
-      const delta15m = compareSnapshots(snap, snaps15m[0]!);
-      const delta30m = compareSnapshots(snap, snaps30m[0]!);
-      const delta5m = compareSnapshots(snap, snaps5m[0]!);
+      const snap15 = snaps15m[0];
+      const snap30 = snaps30m[0];
+      const snap5 = snaps5m[0];
+      if (!snap15 || !snap30 || !snap5) return true;
+      const delta15m = compareSnapshots(snap, snap15);
+      const delta30m = compareSnapshots(snap, snap30);
+      const delta5m = compareSnapshots(snap, snap5);
 
       logData.delta = {
         delta15m,
@@ -407,6 +421,12 @@ export async function startMarketWatcher(
       const rsi = calculateRSI(priceHistory, 14);
       logData.rsi = rsi;
       logData.priceHistoryLen = priceHistory.length;
+
+      // 🚨 GLOBAL TREND DETECTION (EMA50 vs EMA200)
+      // Нужно минимум 200 снапшотов для надёжного определения
+      const globalTrend: GlobalTrend = detectGlobalTrend(snaps);
+      logData.globalTrend = globalTrend;
+      log(`[GLOBAL_TREND] ${symbol}: ${globalTrend} (snaps: ${snaps.length})`);
 
       const trendObj = {
         isBull: false,
@@ -441,8 +461,6 @@ export async function startMarketWatcher(
           : 1;
       const cvdThreshold = Number((baseCvdThreshold * clamp(1 / volRatio, 0.75, 1.25)).toFixed(0));
       const oiThreshold = Number((baseOiThreshold * clamp(volRatio, 0.8, 1.2)).toFixed(3));
-      const habrMode = entryMode === 'adaptive' && adaptiveBollingerStrategy.isSupported(symbol);
-
       state.phase = has30m
         ? detectMarketPhase({
             delta30m,
@@ -509,6 +527,17 @@ export async function startMarketWatcher(
       } | null = null;
 
       if (habrMode) {
+        try {
+          const end = Math.floor(Date.now() / 3600000) * 3600000;
+          const start = end - 200 * 3600 * 1000;
+          const candles1h = await fetchBybitCandles({ symbol, start, end, interval: '60' });
+          if (candles1h.length) {
+            ingest1hCandles(symbol, candles1h);
+            log(`[1h] ${symbol} synced ${candles1h.length} candles`);
+          }
+        } catch (e) {
+          log(`[1h sync] ${symbol} failed:`, e);
+        }
         const adaptive = adaptiveBollingerStrategy.getSignal(symbol);
         entrySignal = adaptive.entrySignal;
         longScore = adaptive.longScore;
@@ -532,6 +561,7 @@ export async function startMarketWatcher(
           isBull: trendObj.isBull,
           isBear: trendObj.isBear,
           impulse: impulseForClassic,
+          globalTrend,
         });
 
         entrySignal = classicScores.entrySignal;
@@ -550,6 +580,7 @@ export async function startMarketWatcher(
           fundingRate: Number(snap.fundingRate || 0),
           rsi,
           symbol,
+          globalTrend,
         });
       }
 
@@ -615,18 +646,40 @@ export async function startMarketWatcher(
       const atr = computeSnapshotATR(snaps, ATR_PERIOD);
       const csi = computeSnapshotCSI(snaps);
 
-      const exitCheck =
-        fsm.state === 'OPEN' && currentPos
-          ? shouldExitPosition({
-              fsm,
-              snapshot: snap,
-              now,
-              entryPrice: currentPos.entryPrice, // Берем реальную цену входа
-              longScore,
-              shortScore,
-              phase: state.phase,
-            })
-          : { exit: false, reason: 'NONE' as const };
+      let exitCheck: { exit: boolean; reason: string };
+      if (habrMode && fsm.state === 'OPEN' && currentPos) {
+        const ctx = adaptiveBollingerStrategy.getContext(symbol);
+        const meanTol = STRATEGY_CONFIG.adaptiveBacktest.meanExitTolerance;
+        const entryPrice = currentPos.entryPrice;
+        const pctMove = (snap.price - entryPrice) / entryPrice;
+        const catastrophicPct = STRATEGY_CONFIG.adaptiveBacktest.catastrophicStopPct ?? 0.07;
+        const catastrophic =
+          (currentPos.side === 'LONG' && pctMove < -catastrophicPct) ||
+          (currentPos.side === 'SHORT' && pctMove > catastrophicPct);
+        let meanExit = false;
+        if (ctx && Number.isFinite(ctx.middle)) {
+          if (currentPos.side === 'LONG' && snap.price >= ctx.middle * (1 - meanTol)) meanExit = true;
+          if (currentPos.side === 'SHORT' && snap.price <= ctx.middle * (1 + meanTol)) meanExit = true;
+        }
+        exitCheck = {
+          exit: catastrophic || meanExit,
+          reason: catastrophic ? 'STOP' : meanExit ? 'MEAN' : 'NONE',
+        };
+      } else {
+        exitCheck =
+          fsm.state === 'OPEN' && currentPos
+            ? shouldExitPosition({
+                fsm,
+                snapshot: snap,
+                now,
+                entryPrice: currentPos.entryPrice,
+                longScore,
+                shortScore,
+                phase: state.phase,
+                atr,
+              })
+            : { exit: false, reason: 'NONE' as const };
+      }
 
       const exitSignal = exitCheck.exit;
       const exitReason = exitCheck.reason;
@@ -673,16 +726,34 @@ export async function startMarketWatcher(
         // Сохраняем цену входа в контекст FSM (нужно для расчета PnL в shouldExitPosition)
         fsm.entryPrice = snap.price;
 
-        const stopPrice = findStopLossLevel(snaps, fsm.side!, state.phase === 'trend' ? 15 : 30);
-
-        if (!stopPrice) {
-          log('Не сформирован стоплосс!');
+        let stopPrice: number | undefined;
+        if (habrMode) {
+          const ctx = adaptiveBollingerStrategy.getContext(symbol);
+          if (ctx && Number.isFinite(ctx.atr) && ctx.atr > 0) {
+            const mult = STRATEGY_CONFIG.adaptiveBacktest.stopAtrMult;
+            stopPrice =
+              fsm.side === 'LONG'
+                ? snap.price - ctx.atr * mult
+                : snap.price + ctx.atr * mult;
+          }
+        } else {
+          stopPrice = findStopLossLevel(snaps, fsm.side!, state.phase === 'trend' ? 15 : 30);
+        }
+        if (!stopPrice || stopPrice <= 0) {
+          log(habrMode ? 'Bollinger: нет 1h ATR' : 'Не сформирован стоплосс!');
           logData.entrySkipReason = 'NO_STOPLOSS';
           logEvent(logData);
           return;
         }
 
         const balance = await balanceProvider();
+
+        const entryMeta: TradeEntryMeta = {
+          longScore,
+          shortScore,
+          entrySignal,
+          signal,
+        };
 
         const success = await tradeExecutor.openPosition({
           symbol,
@@ -691,12 +762,7 @@ export async function startMarketWatcher(
           stopPrice,
           balance,
           now,
-          entryMeta: {
-            longScore,
-            shortScore,
-            entrySignal,
-            signal,
-          },
+          entryMeta,
         });
 
         if (success) {
@@ -739,8 +805,6 @@ export async function startMarketWatcher(
           entryPrice: pos?.entryPrice ?? null,
           side: pos?.side ?? null,
         };
-
-        debugger;
 
         // ВАЖНО: Добавляем await
         await tradeExecutor.closePosition(symbol, {
@@ -800,12 +864,17 @@ export async function startMarketWatcher(
     return null;
   }
 
-  intervalId = setInterval(async () => {
-    const ok = await tick();
-    if (!ok && intervalId) {
-      clearInterval(intervalId);
-      options.onComplete?.();
-    }
-  }, INTERVAL);
+  function scheduleNext() {
+    intervalId = setTimeout(async () => {
+      const ok = await tick();
+      if (!ok) {
+        if (intervalId) clearTimeout(intervalId);
+        options.onComplete?.();
+        return;
+      }
+      scheduleNext();
+    }, INTERVAL);
+  }
+  scheduleNext();
   return intervalId;
 }

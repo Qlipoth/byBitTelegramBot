@@ -12,8 +12,11 @@ import {
   INTERVAL_TO_MS,
   writeCandlesCache,
 } from './candleLoader.js';
+import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 
 type TradeSide = 'LONG' | 'SHORT';
+
+const BACKTEST_CFG = STRATEGY_CONFIG.adaptiveBacktest;
 
 interface OpenTrade {
   side: TradeSide;
@@ -49,10 +52,6 @@ interface TradeDiagnostic {
 }
 
 const DEFAULT_SYMBOL = 'ETHUSDT';
-const STOP_ATR_MULT = 1.5;
-const TAKE_ATR_MULT = 3.0;
-const RISK_PER_TRADE = 0.01; // 1% от баланса
-const START_BALANCE = 1000;
 function annotateExit(diagnostics: TradeDiagnostic[], trade: OpenTrade, closed: ClosedTrade): void {
   const diag = diagnostics[trade.statIndex];
   if (!diag) return;
@@ -84,8 +83,6 @@ function applyInBarExit(
   return null;
 }
 
-const MEAN_EXIT_TOLERANCE = 0.0005;
-
 function checkMeanReversionExit(
   trade: OpenTrade,
   candle: HistoricalCandleInput,
@@ -93,17 +90,18 @@ function checkMeanReversionExit(
 ): { reason: 'MEAN'; price: number } | null {
   if (!context) return null;
   const { middle } = context;
+  const meanTol = BACKTEST_CFG.meanExitTolerance;
   if (!Number.isFinite(middle)) {
     return null;
   }
 
   if (trade.side === 'LONG') {
-    const triggerPrice = middle * (1 - MEAN_EXIT_TOLERANCE);
+    const triggerPrice = middle * (1 - meanTol);
     if (candle.high >= triggerPrice) {
       return { reason: 'MEAN', price: middle };
     }
   } else {
-    const triggerPrice = middle * (1 + MEAN_EXIT_TOLERANCE);
+    const triggerPrice = middle * (1 + meanTol);
     if (candle.low <= triggerPrice) {
       return { reason: 'MEAN', price: middle };
     }
@@ -114,7 +112,7 @@ function checkMeanReversionExit(
 
 function computePositionSize(balance: number, stopDistance: number): number {
   if (stopDistance <= 0) return 0;
-  const capitalRisked = balance * RISK_PER_TRADE;
+  const capitalRisked = balance * BACKTEST_CFG.riskPerTrade;
   return capitalRisked / stopDistance;
 }
 
@@ -127,11 +125,9 @@ function closeTrade(
   const direction = trade.side === 'LONG' ? 1 : -1;
   const rawPnl = (exitPrice - trade.entryPrice) * direction * trade.qty;
 
-  const FEE_RATE = 0.0005; // 0.05 %
-
   const notionalEntry = trade.entryPrice * trade.qty;
   const notionalExit = exitPrice * trade.qty;
-  const fee = (notionalEntry + notionalExit) * FEE_RATE;
+  const fee = (notionalEntry + notionalExit) * BACKTEST_CFG.feeRate;
 
   const pnl = rawPnl - fee;
   return {
@@ -183,7 +179,7 @@ async function runBacktest(
     console.log('✅ Данные чистые: дубликатов нет.');
   }
 
-  let balance = START_BALANCE;
+  let balance: number = BACKTEST_CFG.startBalance;
   let maxEquity = balance;
   let maxDrawdown = 0;
   let openTrade: OpenTrade | null = null;
@@ -207,18 +203,25 @@ async function runBacktest(
       continue;
     }
 
-    // 1️⃣ Проверка выхода из текущей позиции (по стопу/тейку)
+    // 1️⃣ Проверка выхода из текущей позиции (ТОЛЬКО MEAN!)
     if (openTrade) {
-      const exit = applyInBarExit(openTrade, candle);
-      if (exit) {
-        const closed = closeTrade(openTrade, exit.price, candle.timestamp, exit.reason);
+      // Только mean reversion выход — чистый тест стратегии
+      const meanExit = checkMeanReversionExit(openTrade, candle, contextSnapshot);
+      if (meanExit) {
+        const closed = closeTrade(openTrade, meanExit.price, candle.timestamp, meanExit.reason);
         commitClose(openTrade, closed);
         openTrade = null;
         continue;
       }
-      const meanExit = checkMeanReversionExit(openTrade, candle, contextSnapshot);
-      if (meanExit) {
-        const closed = closeTrade(openTrade, meanExit.price, candle.timestamp, meanExit.reason);
+      const catastrophicPct = BACKTEST_CFG.catastrophicStopPct ?? 0.07;
+      const catastrophicStop = (trade: OpenTrade) => {
+        const pctMove = (candle.close - trade.entryPrice) / trade.entryPrice;
+        if (trade.side === 'LONG' && pctMove < -catastrophicPct) return true;
+        if (trade.side === 'SHORT' && pctMove > catastrophicPct) return true;
+        return false;
+      };
+      if (catastrophicStop(openTrade)) {
+        const closed = closeTrade(openTrade, candle.close, candle.timestamp, 'STOP');
         commitClose(openTrade, closed);
         openTrade = null;
         continue;
@@ -242,7 +245,7 @@ async function runBacktest(
       const atr = getATR(symbol);
       if (!Number.isFinite(atr) || atr <= 0) continue;
 
-      const stopDistance = atr * STOP_ATR_MULT;
+      const stopDistance = atr * BACKTEST_CFG.stopAtrMult;
       const qty = computePositionSize(balance, stopDistance);
       if (qty <= 0) continue;
 
@@ -250,7 +253,7 @@ async function runBacktest(
       const stopPrice: number =
         side === 'LONG' ? entryPrice - stopDistance : entryPrice + stopDistance;
       const takePrice: number =
-        side === 'LONG' ? entryPrice + atr * TAKE_ATR_MULT : entryPrice - atr * TAKE_ATR_MULT;
+        side === 'LONG' ? entryPrice + atr * BACKTEST_CFG.takeAtrMult : entryPrice - atr * BACKTEST_CFG.takeAtrMult;
 
       const distanceToMiddle =
         contextSnapshot && contextSnapshot.middle
@@ -301,7 +304,7 @@ async function runBacktest(
   const wins = trades.filter(t => t.pnl > 0);
   const losses = trades.filter(t => t.pnl <= 0);
   const winrate = trades.length ? (wins.length / trades.length) * 100 : 0;
-  const pnlTotal = balance - START_BALANCE;
+  const pnlTotal = balance - BACKTEST_CFG.startBalance;
 
   console.log('================ ADAPTIVE BOLLINGER BACKTEST ================');
   console.log(`Trades: ${trades.length}`);

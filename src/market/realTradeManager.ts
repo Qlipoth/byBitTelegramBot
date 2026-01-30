@@ -3,18 +3,13 @@ import { calculatePositionSizing } from './paperPositionManager.js';
 import { roundStep } from './utils.js';
 import { bybitClient } from '../services/bybit.js';
 import { tradingState } from '../core/tradingState.js';
-import type { TradeExecutor, TradePosition } from './tradeExecutor.js';
+import type { TradeExecutor, TradePosition, TradeEntryMeta } from './tradeExecutor.js';
 import type { OpenPositionParams } from './tradeExecutor.js';
 
-export interface ActivePosition {
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  entryPrice: number;
-  stopLoss: number;
-  takeProfit: number;
-  qty: number;
-  entryTime: number;
-}
+const createDefaultEntryMeta = (): TradeEntryMeta => ({
+  longScore: 0,
+  shortScore: 0,
+});
 
 interface PendingOrder {
   symbol: string;
@@ -25,11 +20,14 @@ interface PendingOrder {
   stopLoss: number;
   takeProfit: number;
   createdAt: number;
+  entryMeta: TradeEntryMeta;
 }
 
 export class RealTradeManager implements TradeExecutor {
-  private readonly activePositions = new Map<string, ActivePosition>();
+  private readonly activePositions = new Map<string, TradePosition>();
   private readonly pendingOrders = new Map<string, PendingOrder>();
+  /** Лок по символу: не открывать вторую позицию пока первая открывается */
+  private readonly openingLocks = new Set<string>();
 
   // Комиссия (Taker + Taker)
   private readonly TOTAL_FEE_PCT = 0.0011;
@@ -145,6 +143,7 @@ export class RealTradeManager implements TradeExecutor {
       takeProfit,
       qty: size,
       entryTime: existing?.entryTime ?? Date.now(),
+      entryMeta: existing?.entryMeta ?? createDefaultEntryMeta(),
     });
   }
 
@@ -198,6 +197,7 @@ export class RealTradeManager implements TradeExecutor {
           takeProfit,
           qty: size,
           entryTime: Date.now(),
+          entryMeta: pending.entryMeta ?? createDefaultEntryMeta(),
         });
         this.pendingOrders.delete(symbol);
       }
@@ -245,10 +245,15 @@ export class RealTradeManager implements TradeExecutor {
   async openPosition(params: OpenPositionParams) {
     const { symbol, side, price, stopPrice, balance } = params;
 
+    if (this.openingLocks.has(symbol)) {
+      console.log(`⚠️ [${symbol}] Уже выполняется открытие — пропуск`);
+      return false;
+    }
     if (!tradingState.isEnabled()) {
       console.warn('[EXECUTION] Trading disabled');
       return false;
     }
+    this.openingLocks.add(symbol);
 
     // 1. Считаем риск и объем (твоя функция)
     const sizing = calculatePositionSizing(balance, price, stopPrice);
@@ -323,6 +328,7 @@ export class RealTradeManager implements TradeExecutor {
         stopLoss: stopPrice,
         takeProfit: tpPrice,
         createdAt: Date.now(),
+        entryMeta: params.entryMeta ?? createDefaultEntryMeta(),
       });
 
       const deadline = Date.now() + 10_000;
@@ -372,6 +378,8 @@ export class RealTradeManager implements TradeExecutor {
       console.error(`❌ Ошибка openPosition:`, e);
       this.pendingOrders.delete(symbol);
       return false;
+    } finally {
+      this.openingLocks.delete(symbol);
     }
   }
 

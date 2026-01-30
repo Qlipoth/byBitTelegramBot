@@ -31,29 +31,34 @@ export const STRATEGY_CONFIG = {
     maxHoldTimeMs: 90 * 60 * 1000,
     extendedCvdReversalAbs: 2_500_000,
   },
+  // Тюнинг под 1h: меньше шума, строже вход, выход к средней
   adaptiveBollinger: {
     bbPeriod: 20,
-    bbStd: 2,
-    emaPeriod: 50,
-    rsiLongPeriod: 200,
+    bbStd: 2.2,                 // Чуть шире полосы = только сильные отклонения
+    emaPeriod: 20,
+    rsiLongPeriod: 14,
     rsiNeutral: 50,
-    rsiDeadband: 5,
-    signalThreshold: 65,
-    scoreGap: 10,
-    minBandDistance: 0.004,
-    emaTrendTolerance: 0.002,
-    clusterAtrFactor: 0.3,
-    bandSlippageTolerance: 0.0015,
+    rsiDeadband: 10,            // Строже RSI — не входим в зоне флэта
+    signalThreshold: 70,      // Только явные сетапы
+    scoreGap: 15,              // Чёткое преимущество long vs short
+    minBandDistance: 0.008,     // Вход только при достаточном отходе от средней (1h)
+    emaTrendTolerance: 0.001,
+    clusterAtrFactor: 0.35,    // Чуть сильнее кластер
+    bandSlippageTolerance: 0.0015, // Жёстче у полосы
+    maxEmaDistanceForLong: 0.02,   // Не лонг, если цена >2% ниже EMA (сильный даунтренд)
+    maxEmaDistanceForShort: 0.02, // Не шорт, если цена >2% выше EMA (сильный аптренд)
+    use1hInLive: true,          // В лайве использовать 1h свечи (как в бэктесте)
     supportedSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'],
   },
   adaptiveBacktest: {
     defaultSymbol: 'ETHUSDT',
-    stopAtrMult: 1.5,
-    takeAtrMult: 3.0,
-    riskPerTrade: 0.01,
+    stopAtrMult: 3.0,           // Широкий стоп — только катастрофа
+    catastrophicStopPct: 0.07,  // Выход по стопу при −7% (было 5%) — даём откату время
+    takeAtrMult: 1.5,
+    riskPerTrade: 0.008,       // 0.8% — меньше размер при проигрыше
     startBalance: 1000,
     feeRate: 0.0005,
-    meanExitTolerance: 0.0005,
+    meanExitTolerance: 0.0025,  // Выход чуть раньше средней (фикс профита)
   },
 } as const;
 
