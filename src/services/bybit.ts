@@ -19,11 +19,13 @@ if (!key || !secret) {
 }
 
 // Initialize Bybit client
+// demoTrading: true — ордера в демо (без реальных денег). Для боевой торговли: false.
+// testnet: true — использовать Bybit Testnet (ключи с testnet.bybit.com).
 export const bybitClient = new RestClientV5({
   key,
   secret,
   demoTrading: true,
-  testnet: false, // Set to true for testnet
+  testnet: false,
   enable_time_sync: true,
   sync_interval_ms: 60_000, // раз в минуту
   recv_window: 20000,
@@ -102,11 +104,6 @@ async function fetchKlinesRange(symbol: string, startTime: number, endTime: numb
       .sort((a, b) => a.timestamp - b.timestamp);
 
     candles.push(...batch);
-    console.log(
-      `[PRELOAD] ${symbol}: fetched ${batch.length} candles (total ${candles.length}) up to ${new Date(
-        batch.at(-1)?.timestamp ?? cursor
-      ).toISOString()}`
-    );
 
     const lastTimestamp = batch.at(-1)?.timestamp;
     if (!lastTimestamp || lastTimestamp <= cursor) {

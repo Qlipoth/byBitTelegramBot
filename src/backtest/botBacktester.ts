@@ -89,6 +89,9 @@ function createVolumeTracker(windowMs: number) {
 
 const FALLBACK_SNAPSHOT_FILE_PATH = DEFAULT_SNAPSHOT_FILE;
 const HISTORY_SYMBOL_SET = new Set(Object.keys(SYMBOL_HISTORY_FILES));
+const SNAPS_STORAGE_DIR = process.platform === 'win32' 
+  ? 'C:\\tmp\\snaps_storage' 
+  : '/tmp/snaps_storage';
 
 function normalizeSymbolInput(rawSymbol: string | undefined) {
   const upper = (rawSymbol ?? 'DOGEUSDT').toUpperCase();
@@ -100,6 +103,85 @@ function resolveSnapshotFilePath(symbol: string) {
     return SYMBOL_HISTORY_FILES[symbol as keyof typeof SYMBOL_HISTORY_FILES];
   }
   return FALLBACK_SNAPSHOT_FILE_PATH;
+}
+
+/**
+ * Находит все файлы снапшотов в storage для данного символа и диапазона дат
+ */
+async function findStorageFiles(symbol: string, startTime: number, endTime: number): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    const entries = await fs.readdir(SNAPS_STORAGE_DIR);
+    const prefix = `${symbol}_`;
+    
+    for (const entry of entries) {
+      if (!entry.startsWith(prefix) || !entry.endsWith('.jsonl')) continue;
+      
+      // Парсим год и месяц из имени файла: ETHUSDT_2024_01.jsonl
+      const match = entry.match(/_(\d{4})_(\d{2})\.jsonl$/);
+      if (!match) continue;
+      
+      const year = parseInt(match[1]!, 10);
+      const month = parseInt(match[2]!, 10);
+      
+      // Границы месяца
+      const monthStart = new Date(year, month - 1, 1).getTime();
+      const monthEnd = new Date(year, month, 0, 23, 59, 59, 999).getTime();
+      
+      // Проверяем пересечение с запрошенным диапазоном
+      if (monthEnd >= startTime && monthStart <= endTime) {
+        files.push(path.join(SNAPS_STORAGE_DIR, entry));
+      }
+    }
+    
+    // Сортируем по дате
+    files.sort();
+  } catch (err) {
+    // storage directory doesn't exist
+  }
+  return files;
+}
+
+/**
+ * Загружает снапшоты из нескольких файлов в storage
+ */
+async function loadSnapshotsFromStorage(
+  symbol: string,
+  startTime: number,
+  endTime: number
+): Promise<MarketSnapshot[]> {
+  const storageFiles = await findStorageFiles(symbol, startTime, endTime);
+  
+  if (!storageFiles.length) {
+    return [];
+  }
+  
+  console.log(`📂 Found ${storageFiles.length} storage files for ${symbol}`);
+  
+  const snapshots: MarketSnapshot[] = [];
+  
+  for (const filePath of storageFiles) {
+    const fileName = path.basename(filePath);
+    const raw = await fs.readFile(filePath, 'utf-8');
+    let count = 0;
+    
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line) as MarketSnapshot;
+        if (parsed.symbol !== symbol) continue;
+        if (parsed.timestamp < startTime || parsed.timestamp > endTime) continue;
+        snapshots.push(ensureSnapshotThresholds(symbol, parsed));
+        count++;
+      } catch (err) {
+        // skip invalid lines
+      }
+    }
+    console.log(`   📄 ${fileName}: ${count} snapshots`);
+  }
+  
+  snapshots.sort((a, b) => a.timestamp - b.timestamp);
+  return snapshots;
 }
 
 function isPrioritySymbol(symbol: string) {
@@ -135,6 +217,15 @@ async function loadRecordedSnapshots(
   endTime: number,
   snapshotFilePath: string
 ): Promise<MarketSnapshot[]> {
+  // Сначала пробуем загрузить из storage
+  const storageSnapshots = await loadSnapshotsFromStorage(symbol, startTime, endTime);
+  if (storageSnapshots.length > 0) {
+    console.log(`✅ Loaded ${storageSnapshots.length} snapshots from storage`);
+    return storageSnapshots;
+  }
+  
+  // Fallback на старый файл
+  console.log(`📂 Storage empty, falling back to ${snapshotFilePath}`);
   const raw = await fs.readFile(snapshotFilePath, 'utf-8');
   const snapshots: MarketSnapshot[] = [];
   for (const line of raw.split(/\r?\n/)) {
@@ -159,6 +250,35 @@ async function getSnapshotRange(
   symbol: string,
   snapshotFilePath: string
 ): Promise<{ start: number; end: number }> {
+  // Сначала проверяем storage
+  const storageFiles = await findStorageFiles(symbol, 0, Date.now());
+  if (storageFiles.length > 0) {
+    let start: number | null = null;
+    let end: number | null = null;
+    
+    for (const filePath of storageFiles) {
+      const raw = await fs.readFile(filePath, 'utf-8');
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as MarketSnapshot;
+          if (parsed.symbol !== symbol) continue;
+          const ts = parsed.timestamp;
+          if (start === null || ts < start) start = ts;
+          if (end === null || ts > end) end = ts;
+        } catch {
+          // skip
+        }
+      }
+    }
+    
+    if (start !== null && end !== null) {
+      console.log(`📂 Storage range: ${new Date(start).toISOString()} → ${new Date(end).toISOString()}`);
+      return { start, end };
+    }
+  }
+  
+  // Fallback на старый файл
   const raw = await fs.readFile(snapshotFilePath, 'utf-8');
   let start: number | null = null;
   let end: number | null = null;
@@ -232,8 +352,9 @@ async function runBotBacktest(params: BacktestRunParams) {
   await tradeExecutor.bootstrap([params.symbol]);
 
   // Warm up candle builder history
+  // IMPORTANT: Need at least 200 snapshots for EMA(200) global trend detection
   candleState[params.symbol] = undefined as any;
-  const warmupCount = Math.min(30, recordedSnapshots.length);
+  const warmupCount = Math.min(250, recordedSnapshots.length);
   for (let i = 0; i < warmupCount; i++) {
     //ingestHistoricalCandle(params.symbol, candles[i]!);
     saveSnapshot(recordedSnapshots[i]!);

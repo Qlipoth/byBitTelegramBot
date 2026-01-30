@@ -116,7 +116,7 @@ export class BacktestTradeManager implements TradeExecutor {
 
     this.balance += netPnl;
 
-    this.closedTrades.push({
+    const closedTrade: ClosedBacktestTrade = {
       ...existing,
       exitPrice,
       exitTime,
@@ -126,7 +126,9 @@ export class BacktestTradeManager implements TradeExecutor {
       pnlGrossPct,
       feesUsd: fee,
       reason,
-    });
+    };
+
+    this.closedTrades.push(closedTrade);
 
     this.activePositions.delete(symbol);
   }

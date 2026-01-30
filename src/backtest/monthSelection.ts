@@ -32,25 +32,37 @@ for (const { num, aliases } of MONTH_ALIAS_GROUPS) {
 export function tryParseMonthToken(token: string | undefined): MonthSelection | null {
   if (!token) return null;
   const cleaned = token.trim().toLowerCase();
-  const match = cleaned.match(/^([a-zа-яё]+|\d{1,2})[-_/](\d{4})$/i);
+  const match = cleaned.match(/^([a-zа-яё]+|\d{1,2})(?:[-_/](\d{4}))?$/i);
   if (!match) return null;
   const [, monthPartRaw, yearRaw] = match;
   const monthPart = monthPartRaw!.toLowerCase();
   const monthNumber = MONTH_ALIAS_MAP.get(monthPart);
   if (!monthNumber) return null;
-  const year = Number(yearRaw);
+  const now = dayjs();
+  let year = yearRaw ? Number(yearRaw) : now.year();
   if (!Number.isFinite(year) || year < 1970) return null;
   const startTime = dayjs()
     .year(year)
     .month(monthNumber - 1)
     .startOf('month')
     .valueOf();
-  const endTime = dayjs(startTime).endOf('month').valueOf();
+
+  // If start time is in the future and year wasn't explicitly provided, assume previous year.
+  if (!yearRaw && startTime > now.valueOf()) {
+    year -= 1;
+  }
+
+  const finalStart = dayjs()
+    .year(year)
+    .month(monthNumber - 1)
+    .startOf('month')
+    .valueOf();
+  const endTime = dayjs(finalStart).endOf('month').valueOf();
   return {
     token,
-    startTime,
+    startTime: finalStart,
     endTime,
-    label: dayjs(startTime).format('MMMM YYYY'),
+    label: dayjs(finalStart).format('MMMM YYYY'),
   };
 }
 

@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "node dist/bot.js",
-    "start": "node --trace-uncaught --enable-source-maps --loader ts-node/esm src/bot/index.ts",
+    "start": "npx tsx src/bot/index.ts",
     "build": "node build.js",
     "build:prod": "NODE_ENV=production node build.js",
     "backtest:adaptive": "node --loader ts-node/esm src/backtest/adaptiveBollingerBacktest.ts",
@@ -19,7 +19,13 @@
     "backtest:SOL": "node --loader ts-node/esm src/backtest/botBacktester.ts SOL",
     "preload:months": "node --loader ts-node/esm scripts/preloadSnapshotsByMonth.ts ETH sep-2025 oct-2025"
   },
-  "keywords": ["bybit", "trading", "bot", "telegram", "crypto"],
+  "keywords": [
+    "bybit",
+    "trading",
+    "bot",
+    "telegram",
+    "crypto"
+  ],
   "author": "Qlipoth",
   "license": "ISC",
   "dependencies": {

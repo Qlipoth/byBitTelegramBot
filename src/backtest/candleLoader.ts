@@ -15,6 +15,7 @@ export const INTERVAL_TO_MS = {
   '3': 180_000,
   '5': 300_000,
   '15': 900_000,
+  '60': 3_600_000,
 } as const;
 
 export interface OpenInterestPoint {

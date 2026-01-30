@@ -232,12 +232,12 @@ export function findStopLossLevel(
   const prices = relevantSnaps.map(s => s.price);
 
   if (side === 'LONG') {
-    // Стоп ставим чуть ниже локального минимума (на 0.1% для "дыхания")
+    // ВАРИАНТ C: Стоп ниже локального минимума с буфером 0.5%
     const minPrice = Math.min(...prices);
-    return minPrice * 0.999;
+    return minPrice * 0.995;
   } else {
-    // Стоп ставим чуть выше локального максимума
+    // Стоп выше локального максимума с буфером 0.5%
     const maxPrice = Math.max(...prices);
-    return maxPrice * 1.001;
+    return maxPrice * 1.005;
   }
 }

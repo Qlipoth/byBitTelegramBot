@@ -159,7 +159,7 @@ export function fsmStep(
 }
 
 export const EXIT_THRESHOLDS = {
-  STOP_LOSS_PCT: 1.2, // 0.6% стоп
+  STOP_LOSS_PCT: 2.5, // ВАРИАНТ A: увеличенный стоп 2.5%
   TAKE_PROFIT_PCT: 2, // минимум 1.2% для разрешения выхода
   CVD_REVERSAL: 500000, // агрессивный CVD против позиции для BTC/ETH
   CVD_REVERSAL_ALT: 150000, // агрессивный CVD для альтов
@@ -188,6 +188,7 @@ export function shouldExitPosition({
   entryPrice,
   longScore,
   shortScore,
+  atr,
 }: {
   fsm: FSMContext;
   phase: string;
@@ -196,6 +197,7 @@ export function shouldExitPosition({
   entryPrice: number;
   longScore: number;
   shortScore: number;
+  atr?: number;
 }): { exit: boolean; reason: ExitReason } {
   if (fsm.state !== 'OPEN' || !fsm.side) return { exit: false, reason: 'NONE' };
 
@@ -214,8 +216,16 @@ export function shouldExitPosition({
     return { exit: true, reason: 'MAX_POSITION_DURATION' };
   }
 
-  // 1. ЖЕСТКИЙ СТОП-ЛОСС (из конфига)
-  if (pnlPct <= -EXIT_THRESHOLDS.STOP_LOSS_PCT) return { exit: true, reason: 'STOP_LOSS' };
+  // 1. ДИНАМИЧЕСКИЙ СТОП-ЛОСС на основе ATR (ВАРИАНТ B)
+  // Если ATR доступен — используем 2×ATR, иначе фиксированный %
+  let dynamicStopPct = EXIT_THRESHOLDS.STOP_LOSS_PCT;
+  if (atr && atr > 0 && entryPrice > 0) {
+    // ATR в процентах от цены × 2
+    const atrPct = (atr / entryPrice) * 100;
+    dynamicStopPct = Math.max(atrPct * 2, 1.0); // Минимум 1%, максимум 2×ATR
+    dynamicStopPct = Math.min(dynamicStopPct, 4.0); // Не больше 4%
+  }
+  if (pnlPct <= -dynamicStopPct) return { exit: true, reason: 'STOP_LOSS' };
 
   // 2. ЗАЩИТА ПРИБЫЛИ ПО СИГНАЛУ (Вместо maxReachedPnl)
   // Если профит уже > 0.4%, и сигнал (Score) упал ниже 50 — выходим.

@@ -15,7 +15,7 @@ export interface TradePosition {
   takeProfit: number;
   qty: number;
   entryTime: number;
-  entryMeta?: TradeEntryMeta;
+  entryMeta: TradeEntryMeta;
 }
 
 export interface OpenPositionParams {

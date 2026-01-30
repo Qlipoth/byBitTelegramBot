@@ -108,6 +108,10 @@ async function startWatchersOnce() {
     return;
   }
 
+  const entryMode = process.env.ENTRY_MODE === 'classic' ? 'classic' : 'adaptive';
+  if (entryMode === 'adaptive') {
+    console.log('📊 Entry mode: adaptive (Bollinger 1h, как в бэктесте)');
+  }
   stopWatchers = await initializeMarketWatcher(async msg => {
     for (const chatId of subscribers) {
       try {
@@ -118,7 +122,7 @@ async function startWatchersOnce() {
         console.error('Send failed:', chatId, e);
       }
     }
-  });
+  }, { entryMode });
 
   console.log('🚀 Market watchers started');
 }
@@ -305,7 +309,8 @@ bot.command('stats', async ctx => {
   const loadingMsg = await ctx.reply('🔄 Loading stats...');
 
   try {
-    const start = dayjs(new Date(2025, 11, 31, 0, 0, 0, 0));
+    // Статистика с 29 января 00:00
+    const start = dayjs(new Date(2026, 0, 29, 0, 0, 0, 0));
     const end = dayjs();
     const startTime = start.valueOf();
     const endTime = end.valueOf();

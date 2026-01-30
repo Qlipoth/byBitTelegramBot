@@ -37,3 +37,20 @@ npm-debug.log*
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Runtime / generated data
+cache/
+models/
+realSnaps.json
+
+# IDE / agent artifacts
+.kilocodemodes
+ai_memory.json
+error_log.txt
+package.json.*
+
+# Debug/analysis scripts (not used by Bollinger strategy)
+scripts/analyzeSnapshots.mjs
+scripts/analyzeTradePatterns.mjs
+scripts/debugPhaseDetection.mjs
+scripts/downloadSnapsToStorage.ts

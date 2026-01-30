@@ -48,6 +48,7 @@ export function calculateEntryScores(
     impulse, // Это наши { PRICE_SURGE_PCT, VOL_SURGE_CVD }
     isBull,
     isBear,
+    globalTrend,
   }: EntryScoresParams,
   log?: WatcherLogger
 ): EntryScores {
@@ -77,183 +78,173 @@ export function calculateEntryScores(
   };
 
   /* =====================
-   1️⃣ Phase (БЕЗ ИЗМЕНЕНИЙ)
-  ===================== */
-  if (state.phase === 'blowoff') return { longScore: 0, shortScore: 0, entrySignal: `🚫 BLOWOFF` };
-  if (state.phase === 'accumulation') {
-    awardScore('LONG', 15, 'PHASE', `phase=${state.phase}`);
-  } else if (state.phase === 'distribution') {
-    awardScore('SHORT', 15, 'PHASE', `phase=${state.phase}`);
-  } else if (state.phase === 'trend') {
-    if (isBull) {
-      awardScore('LONG', 15, 'PHASE', 'phase=trend isBull');
-    }
-    if (isBear) {
-      awardScore('SHORT', 15, 'PHASE', 'phase=trend isBear');
-    }
-  }
-  details.phase =
-    (state.phase === 'accumulation' ? 15 : 0) +
-    (state.phase === 'distribution' ? 15 : 0) +
-    (state.phase === 'trend' ? (isBull ? 15 : 0) + (isBear ? 15 : 0) : 0);
+   TREND-FOLLOWING SCORING SYSTEM v4
+   Ключевое изменение: ФИЛЬТР ГЛОБАЛЬНОГО ТРЕНДА
+   - BULLISH → только LONG
+   - BEARISH → только SHORT
+   - NEUTRAL → обе стороны (с осторожностью)
+   Макс скор: ~100
+   MIN_SCORE = 65 для входа
+   ===================== */
 
-  /* =====================
-   2️⃣ OI dynamics (БЕЗ ИЗМЕНЕНИЙ)
-  ===================== */
+  // Blowoff — единственный жёсткий блок
+  if (state.phase === 'blowoff') return { longScore: 0, shortScore: 0, entrySignal: `🚫 BLOWOFF` };
+
+  // =====================
+  // 🚨 GLOBAL TREND FILTER — главный фильтр
+  // =====================
+  const trend = globalTrend ?? 'NEUTRAL';
+  logger(`[GLOBAL_TREND] ${trend}`);
+
+  // Если глобальный тренд определён, блокируем противоположную сторону ПОЛНОСТЬЮ
+  if (trend === 'BULLISH') {
+    // В бычьем тренде SHORT = 0 всегда
+    shortScore = 0;
+    logger(`[GLOBAL_TREND] BULLISH → SHORT blocked`);
+  } else if (trend === 'BEARISH') {
+    // В медвежьем тренде LONG = 0 всегда
+    longScore = 0;
+    logger(`[GLOBAL_TREND] BEARISH → LONG blocked`);
+  }
+
   const oi30 = delta30m?.oiChangePct ?? 0;
   const oi15 = delta15m?.oiChangePct ?? 0;
-  const isDataMature = (delta30m?.minutesAgo ?? 0) >= 15;
-
-  let oiLong =
-    (isDataMature ? Math.log1p(Math.max(oi30, 0)) * 10 : 0) + Math.log1p(Math.max(oi15, 0)) * 10;
-  let oiShort =
-    (isDataMature ? Math.log1p(Math.max(-oi30, 0)) * 10 : 0) + Math.log1p(Math.max(-oi15, 0)) * 10;
-
-  // Если OI падает (меньше нуля), мы вычитаем баллы из обоих направлений,
-  // потому что падение OI — это выход игроков (ликвидации/фиксация), а не новый импульс.
-  if (oi15 < 0) {
-    const penalty = 15;
-    oiLong -= penalty;
-    oiShort -= penalty;
-    // Можно добавить лог, чтобы видеть это в консоли
-    logger(`[OI_PENALTY] OI is falling (${oi15.toFixed(2)}%), reducing confidence`);
-  }
-
-  const oiLongBonus = Math.min(oiLong, 25);
-  const oiShortBonus = Math.min(oiShort, 25);
-
-  awardScore('LONG', oiLongBonus, 'OI', `oi30=${oi30.toFixed(2)} oi15=${oi15.toFixed(2)}`);
-  awardScore('SHORT', oiShortBonus, 'OI', `oi30=${oi30.toFixed(2)} oi15=${oi15.toFixed(2)}`);
-  details.oi = Math.round(Math.max(oiLongBonus, oiShortBonus));
-
-  /* =====================
-   3️⃣ Funding (БЕЗ ИЗМЕНЕНИЙ)
-  ===================== */
-  const fRate = snap.fundingRate ?? 0;
-  if (fRate < -0.0001) {
-    awardScore('LONG', 10, 'FUNDING', `fundingRate=${fRate}`);
-  }
-  if (fRate > 0.0001) {
-    awardScore('SHORT', 10, 'FUNDING', `fundingRate=${fRate}`);
-  }
-  if (fRate < -0.0004) {
-    awardScore('LONG', 5, 'FUNDING_EXTREME', `fundingRate=${fRate}`);
-  } else if (fRate > 0.0004) {
-    awardScore('SHORT', 5, 'FUNDING_EXTREME', `fundingRate=${fRate}`);
-  }
-  details.funding = fRate === 0 ? 0 : 10;
-
-  /* =====================
-   4️⃣ CVD strength (АДАПТИРОВАНО ПОД ПОРОГ)
-  ===================== */
-  // Вместо 5000 и 2000 используем динамический cvdThreshold
-  // cvdThreshold — это средний минутный объем * 1.8.
-  // Для 15 минут логично ждать примерно cvdThreshold * 5
-  const dynamicCvd15Threshold = impulse.VOL_SURGE_CVD * 5;
-  const dynamicCvd3Threshold = impulse.VOL_SURGE_CVD * 1.5;
-
-  const cvd15Norm = Math.min(Math.abs(cvd15m) / dynamicCvd15Threshold, 1);
-  const cvd3Norm = Math.min(Math.abs(cvd3m) / dynamicCvd3Threshold, 1);
-  const cvd15Active = Math.abs(cvd15m) >= dynamicCvd15Threshold * 0.5;
-  const cvd3Active = Math.abs(cvd3m) >= dynamicCvd3Threshold * 0.5;
-
-  if (cvd15Active && cvd15m > 0) {
-    const bonus = cvd15Norm * 10;
-    awardScore('LONG', bonus, 'CVD15', `cvd15m=${cvd15m.toFixed(0)}`);
-  }
-  if (cvd15Active && cvd15m < 0) {
-    const bonus = cvd15Norm * 10;
-    awardScore('SHORT', bonus, 'CVD15', `cvd15m=${cvd15m.toFixed(0)}`);
-  }
-
-  if (cvd3Active && cvd3m > 0) {
-    const bonus = cvd3Norm * 7;
-    awardScore('LONG', bonus, 'CVD3', `cvd3m=${cvd3m.toFixed(0)}`);
-  }
-  if (cvd3Active && cvd3m < 0) {
-    const bonus = cvd3Norm * 7;
-    awardScore('SHORT', bonus, 'CVD3', `cvd3m=${cvd3m.toFixed(0)}`);
-  }
-  details.cvd = Math.round((cvd15Active ? cvd15Norm * 10 : 0) + (cvd3Active ? cvd3Norm * 7 : 0));
-
-  /* =====================
-   5️⃣ Impulse & Velocity (АДАПТИРОВАНО)
-  ===================== */
   const price1m = delta?.priceChangePct ?? 0;
   const price5m = delta5m?.priceChangePct ?? 0;
-
-  // 1m Impulse (Сравнение с живым порогом ATR)
-  if (price1m > impulse.PRICE_SURGE_PCT) {
-    awardScore(
-      'LONG',
-      10,
-      'IMPULSE_1M',
-      `price1m=${price1m.toFixed(3)} thresh=${impulse.PRICE_SURGE_PCT}`
-    );
-  }
-  if (price1m < -impulse.PRICE_SURGE_PCT) {
-    awardScore(
-      'SHORT',
-      10,
-      'IMPULSE_1M',
-      `price1m=${price1m.toFixed(3)} thresh=${impulse.PRICE_SURGE_PCT}`
-    );
-  }
-
-  // Velocity: Если 5м делает основной вклад в 15м
-  const isVelocityLong = price5m > 0 && price5m > (delta15m?.priceChangePct ?? 0) * 0.7;
-  const isVelocityShort = price5m < 0 && price5m < (delta15m?.priceChangePct ?? 0) * 0.7;
-
-  if (isVelocityLong) {
-    awardScore(
-      'LONG',
-      5,
-      'VELOCITY_5M',
-      `price5m=${price5m.toFixed(3)} delta15m=${(delta15m?.priceChangePct ?? 0).toFixed(3)}`
-    );
-  }
-  if (isVelocityShort) {
-    awardScore(
-      'SHORT',
-      5,
-      'VELOCITY_5M',
-      `price5m=${price5m.toFixed(3)} delta15m=${(delta15m?.priceChangePct ?? 0).toFixed(3)}`
-    );
-  }
-  details.impulse =
-    (price1m > impulse.PRICE_SURGE_PCT ? 10 : 0) +
-    (price1m < -impulse.PRICE_SURGE_PCT ? 10 : 0) +
-    (isVelocityLong || isVelocityShort ? 5 : 0);
+  const price15m = delta15m?.priceChangePct ?? 0;
+  const price30m = delta30m?.priceChangePct ?? 0;
 
   /* =====================
-   6️⃣ RSI & Trend (БЕЗ ИЗМЕНЕНИЙ)
+   1️⃣ MOMENTUM — главный драйвер (макс +30)
+   Смотрим на направленное движение цены
   ===================== */
-  if (rsi >= 55) {
-    awardScore('LONG', 5, 'RSI', `rsi=${rsi.toFixed(2)}`);
+  // 30-минутный momentum: сильное направленное движение
+  const momentum30 = Math.min(Math.abs(price30m) / 0.5, 1) * 15; // 0.5% = 15 баллов
+  if (price30m > 0.1) {
+    awardScore('LONG', momentum30, 'MOMENTUM_30M', `p30m=${price30m.toFixed(2)}%`);
+  } else if (price30m < -0.1) {
+    awardScore('SHORT', momentum30, 'MOMENTUM_30M', `p30m=${price30m.toFixed(2)}%`);
   }
-  if (rsi <= 45) {
-    awardScore('SHORT', 5, 'RSI', `rsi=${rsi.toFixed(2)}`);
-  }
-  if (rsi >= 70) {
-    awardScore('SHORT', 7, 'RSI_EXTREME', `rsi=${rsi.toFixed(2)}`);
-  } else if (rsi <= 30) {
-    awardScore('LONG', 7, 'RSI_EXTREME', `rsi=${rsi.toFixed(2)}`);
-  }
-  if (isBull) {
-    awardScore('LONG', 5, 'TREND', 'isBull=true');
-  }
-  if (isBear) {
-    awardScore('SHORT', 5, 'TREND', 'isBear=true');
-  }
-  details.rsi = (rsi >= 55 ? 5 : 0) + (rsi <= 45 ? 5 : 0);
-  details.trend = (isBull ? 5 : 0) + (isBear ? 5 : 0);
 
-  // 1. Защита от "падающего ножа" (Убивает убыток сделки №12)
-  // Если цена за 5 минут упала в 3 раза сильнее, чем обычный импульс — это обвал, а не разворот.
-  const knifeThreshold = impulse.PRICE_SURGE_PCT * 3;
+  // 5-минутный импульс: свежий momentum
+  const momentum5 = Math.min(Math.abs(price5m) / 0.3, 1) * 15; // 0.3% = 15 баллов
+  if (price5m > 0.05) {
+    awardScore('LONG', momentum5, 'MOMENTUM_5M', `p5m=${price5m.toFixed(2)}%`);
+  } else if (price5m < -0.05) {
+    awardScore('SHORT', momentum5, 'MOMENTUM_5M', `p5m=${price5m.toFixed(2)}%`);
+  }
+  details.impulse = Math.round(Math.max(momentum30, momentum5));
+
+  /* =====================
+   2️⃣ TREND ALIGNMENT — бонус за совпадение направлений (макс +15)
+  ===================== */
+  const sameDirection = Math.sign(price5m) === Math.sign(price30m) && Math.sign(price30m) !== 0;
+  if (sameDirection) {
+    const alignBonus = 15;
+    if (price30m > 0) {
+      awardScore('LONG', alignBonus, 'TREND_ALIGN', '5m & 30m same direction');
+    } else {
+      awardScore('SHORT', alignBonus, 'TREND_ALIGN', '5m & 30m same direction');
+    }
+  }
+  details.trend = sameDirection ? 15 : 0;
+
+  /* =====================
+   3️⃣ OI CONFIRMATION — подтверждение позициями (макс +15)
+   Растущий OI = новые позиции = уверенность
+  ===================== */
+  if (oi15 > 0.05) {
+    // OI растёт — уверенный вход в рынок
+    const oiBonus = Math.min(oi15 * 30, 15); // 0.5% OI = 15 баллов
+    if (price15m > 0) {
+      awardScore('LONG', oiBonus, 'OI_CONFIRM', `oi15=${oi15.toFixed(2)}% growing`);
+    } else if (price15m < 0) {
+      awardScore('SHORT', oiBonus, 'OI_CONFIRM', `oi15=${oi15.toFixed(2)}% growing`);
+    }
+    details.oi = Math.round(oiBonus);
+  } else if (oi15 < -0.2) {
+    // OI падает — позиции закрываются, НО это не блокирует
+    // Просто не даём бонус
+    logger(`[OI] Positions closing (${oi15.toFixed(2)}%), no bonus`);
+    details.oi = 0;
+  } else {
+    details.oi = 0;
+  }
+
+  /* =====================
+   4️⃣ CVD FLOW — подтверждение объёмом (макс +15)
+  ===================== */
+  const cvdThresh = impulse.VOL_SURGE_CVD * 2;
+  if (Math.abs(cvd15m) > cvdThresh * 0.2) {
+    const cvdBonus = Math.min(Math.abs(cvd15m) / cvdThresh, 1) * 15;
+    if (cvd15m > 0) {
+      awardScore('LONG', cvdBonus, 'CVD_FLOW', `cvd15m=${cvd15m.toFixed(0)}`);
+    } else {
+      awardScore('SHORT', cvdBonus, 'CVD_FLOW', `cvd15m=${cvd15m.toFixed(0)}`);
+    }
+    details.cvd = Math.round(cvdBonus);
+  } else {
+    details.cvd = 0;
+  }
+
+  /* =====================
+   5️⃣ RSI ZONES — контртренд или momentum (макс +15)
+  ===================== */
+  if (rsi <= 35) {
+    // Перепроданность — возможен отскок (LONG)
+    awardScore('LONG', 15, 'RSI_OVERSOLD', `rsi=${rsi.toFixed(1)}`);
+    details.rsi = 15;
+  } else if (rsi >= 65) {
+    // Перекупленность — возможна коррекция (SHORT)
+    awardScore('SHORT', 15, 'RSI_OVERBOUGHT', `rsi=${rsi.toFixed(1)}`);
+    details.rsi = 15;
+  } else if (rsi > 50 && rsi < 65) {
+    // Бычий momentum
+    awardScore('LONG', 5, 'RSI_BULLISH', `rsi=${rsi.toFixed(1)}`);
+    details.rsi = 5;
+  } else if (rsi < 50 && rsi > 35) {
+    // Медвежий momentum
+    awardScore('SHORT', 5, 'RSI_BEARISH', `rsi=${rsi.toFixed(1)}`);
+    details.rsi = 5;
+  } else {
+    details.rsi = 0;
+  }
+
+  /* =====================
+   6️⃣ PHASE BONUS — бонус за благоприятную фазу (макс +10)
+  ===================== */
+  if (state.phase === 'accumulation') {
+    awardScore('LONG', 10, 'PHASE', 'accumulation');
+  } else if (state.phase === 'distribution') {
+    awardScore('SHORT', 10, 'PHASE', 'distribution');
+  } else if (state.phase === 'trend') {
+    if (isBull) awardScore('LONG', 10, 'PHASE', 'trend bull');
+    if (isBear) awardScore('SHORT', 10, 'PHASE', 'trend bear');
+  }
+  details.phase = state.phase !== 'range' ? 10 : 0;
+
+  /* =====================
+   7️⃣ FUNDING — контртренд сигнал (макс +5)
+  ===================== */
+  const fRate = snap.fundingRate ?? 0;
+  if (fRate < -0.0002) {
+    awardScore('LONG', 5, 'FUNDING', `negative funding ${fRate}`);
+  } else if (fRate > 0.0002) {
+    awardScore('SHORT', 5, 'FUNDING', `positive funding ${fRate}`);
+  }
+  details.funding = Math.abs(fRate) > 0.0002 ? 5 : 0;
+
+  /* =====================
+   SAFETY FILTERS — защита от опасных ситуаций
+  ===================== */
+  const knifeThreshold = 1.5; // 1.5% за 5 минут — это обвал
   if (longScore > 0 && price5m < -knifeThreshold) {
-    longScore -= 30; // Сбрасываем скор, чтобы не войти
-    logger(`[SAFETY] Falling knife detected (5m: ${price5m.toFixed(2)}%), penalty -30`);
+    longScore -= 30;
+    logger(`[SAFETY] Falling knife (5m: ${price5m.toFixed(2)}%), penalty -30`);
+  }
+  if (shortScore > 0 && price5m > knifeThreshold) {
+    shortScore -= 30;
+    logger(`[SAFETY] Parabolic spike (5m: ${price5m.toFixed(2)}%), penalty -30`);
   }
 
   // Clamp
@@ -261,8 +252,8 @@ export function calculateEntryScores(
   shortScore = Math.min(100, Math.round(shortScore));
 
   let entrySignal = `⚪ Нет сетапа (L:${longScore} S:${shortScore})`;
-  if (longScore >= 65) entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
-  else if (shortScore >= 65) entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
+  if (longScore >= MIN_SCORE) entrySignal = `🟢 LONG SETUP (${longScore}/100)`;
+  else if (shortScore >= MIN_SCORE) entrySignal = `🔴 SHORT SETUP (${shortScore}/100)`;
 
   logger(
     `[ENTRY_SCORE][TOTAL] 🟢LONG=${longScore} 🔴SHORT=${shortScore} | signal=${entrySignal}`
@@ -283,6 +274,7 @@ export function getSignalAgreement(
     fundingRate,
     rsi,
     symbol,
+    globalTrend,
   }: SignalAgreementParams,
   log?: WatcherLogger
 ) {
@@ -301,23 +293,21 @@ export function getSignalAgreement(
     breakoutCvdFactor: isSol ? 0.8 : 1,
   };
   const csi = getCSI(symbol); // Получаем индекс силы
+  const trend = globalTrend ?? 'NEUTRAL';
 
-  // 1. Для пробоев и накопления нам нужен ИМПУЛЬС (CSI выше 0.25)
-  // if ((phase === 'accumulation' || phase === 'distribution') && Math.abs(csi) < 0.25) {
-  //   console.log(`[SIGNAL_AGREEMENT] CSI ${csi.toFixed(2)} too low for BREAKOUT`);
-  //   return 'NONE';
-  // }
-  //
-  // // 2. Для тренда достаточно, чтобы CSI просто не был направлен ПРОТИВ нас
-  // if (phase === 'trend') {
-  //   if (longScore > shortScore && csi < -0.1) return 'NONE'; // Пытаемся лонговать, а минутка давит вниз
-  //   if (shortScore > longScore && csi > 0.1) return 'NONE'; // Пытаемся шортить, а минутка откупается
-  // }
-  //
-  // // 3. Абсолютный мусор (дойджи, отсутствие объема) — режем всегда
-  // if (Math.abs(csi) < 0.1) {
-  //   return 'NONE';
-  // }
+  // 🚨 GLOBAL TREND FILTER — блокируем торговлю против тренда
+  const isLongAllowed = trend !== 'BEARISH';
+  const isShortAllowed = trend !== 'BULLISH';
+
+  if (!isLongAllowed && longScore > shortScore) {
+    logger(`[SIGNAL_AGREEMENT] LONG blocked by BEARISH global trend`);
+    return 'NONE';
+  }
+  if (!isShortAllowed && shortScore > longScore) {
+    logger(`[SIGNAL_AGREEMENT] SHORT blocked by BULLISH global trend`);
+    return 'NONE';
+  }
+
   // 1️⃣ Блокировка при кульминации
   if (phase === 'blowoff') {
     logger(`[SIGNAL_AGREEMENT] Blowoff phase detected, returning NONE`);
@@ -371,6 +361,7 @@ export function getSignalAgreement(
     if (
       longScore >= tuning.minLongScore + 3 &&
       longScore - shortScore >= tuning.breakoutScoreGap &&
+      pricePercentChange > 0 &&
       cvd15m > cvdThreshold * tuning.breakoutCvdFactor &&
       fundingRate <= 0.0002
     ) {
@@ -381,6 +372,7 @@ export function getSignalAgreement(
     if (
       shortScore >= tuning.minShortScore + 3 &&
       shortScore - longScore >= tuning.breakoutScoreGap &&
+      pricePercentChange < 0 &&
       cvd15m < -cvdThreshold * tuning.breakoutCvdFactor &&
       fundingRate >= -0.0002
     ) {
@@ -397,7 +389,7 @@ export function getSignalAgreement(
       longScore >= tuning.minLongScore + 5 &&
       longScore - shortScore >= 20 &&
       rsi >= Math.max(tuning.minLongRsi, 55) &&
-      Math.abs(pricePercentChange) >= moveThreshold * 0.3 &&
+      pricePercentChange >= moveThreshold * 0.3 &&
       Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m > 0
     ) {
@@ -409,7 +401,7 @@ export function getSignalAgreement(
       shortScore >= tuning.minShortScore + 5 &&
       shortScore - longScore >= 20 &&
       rsi <= Math.min(tuning.maxShortRsi, 45) &&
-      Math.abs(pricePercentChange) >= moveThreshold * 0.3 &&
+      pricePercentChange <= -moveThreshold * 0.3 &&
       Math.abs(cvd15m) >= cvdThreshold * 0.3 &&
       cvd15m < 0
     ) {

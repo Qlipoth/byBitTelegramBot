@@ -73,6 +73,8 @@ export interface EntryScores {
   }>;
 }
 
+export type GlobalTrend = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+
 export interface EntryScoresParams {
   state: MarketState;
   delta: MarketDelta;
@@ -86,6 +88,7 @@ export interface EntryScoresParams {
   impulse: IMPULSE_THRESHOLDS_CONFIG;
   isBull: boolean;
   isBear: boolean;
+  globalTrend?: GlobalTrend;
 }
 
 export interface SignalAgreementParams {
@@ -99,6 +102,7 @@ export interface SignalAgreementParams {
   fundingRate: number;
   rsi: number;
   symbol: string;
+  globalTrend?: GlobalTrend;
 }
 
 export interface ConfirmEntryParams {

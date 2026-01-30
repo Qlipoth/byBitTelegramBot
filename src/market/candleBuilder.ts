@@ -23,11 +23,27 @@ interface CandleState {
 
 export const candleState: CandleState = {};
 
+/** 1h свечи для Bollinger в лайве (как в бэктесте) */
+const candleState1h: CandleState = {};
+
 const candleConfig = STRATEGY_CONFIG.candleBuilder;
+
+const HISTORY_LIMIT_1H = 250;
 
 export function initSymbol(symbol: string): void {
   if (!candleState[symbol]) {
     candleState[symbol] = {
+      current: null,
+      history: [],
+      atr: 0,
+      avgVolume: 0,
+    };
+  }
+}
+
+export function initSymbol1h(symbol: string): void {
+  if (!candleState1h[symbol]) {
+    candleState1h[symbol] = {
       current: null,
       history: [],
       atr: 0,
@@ -146,6 +162,16 @@ export function getATR(symbol: string) {
 export function getHistory(symbol: string) {
   return candleState[symbol]?.history ?? [];
 }
+
+export function getCandle1h(symbol: string) {
+  return candleState1h[symbol]?.current ?? null;
+}
+export function getHistory1h(symbol: string) {
+  return candleState1h[symbol]?.history ?? [];
+}
+export function getATR1h(symbol: string) {
+  return candleState1h[symbol]?.atr ?? 0;
+}
 export function getAvgVolume(symbol: string) {
   return candleState[symbol]?.avgVolume ?? 0;
 }
@@ -190,4 +216,33 @@ export function ingestHistoricalCandle(symbol: string, candle: HistoricalCandleI
 
   const lastVols = state.history.slice(-candleConfig.volumeAvgPeriod).map(c => c.volume);
   state.avgVolume = lastVols.reduce((a, b) => a + b, 0) / (lastVols.length || 1);
+}
+
+/**
+ * Синхронизирует 1h свечи для символа (как в бэктесте).
+ * Вызывается из watcher при adaptive mode перед getSignal.
+ */
+export function ingest1hCandles(symbol: string, candles: HistoricalCandleInput[]) {
+  initSymbol1h(symbol);
+  const state = candleState1h[symbol]!;
+  state.history = [];
+  state.current = null;
+  for (const c of candles) {
+    if (state.current) {
+      state.history.push(state.current);
+      if (state.history.length >= HISTORY_LIMIT_1H) state.history.shift();
+    }
+    state.current = {
+      minute: Math.floor(c.timestamp / 3600000),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume,
+    };
+  }
+  const all1h = state.current ? [...state.history, state.current] : state.history;
+  state.atr = all1h.length >= 15 ? calculateATRFromCandles(all1h, 14) : 0;
+  const lastVols = state.history.slice(-14).map(h => h.volume);
+  state.avgVolume = lastVols.length ? lastVols.reduce((a, b) => a + b, 0) / lastVols.length : 0;
 }

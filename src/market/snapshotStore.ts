@@ -4,7 +4,7 @@ import type { MarketSnapshot } from './types.js';
 import { INTERVALS, LOG_PATH } from './constants.market.js'; // .js extension required for NodeNext module resolution
 
 const store: Record<string, MarketSnapshot[]> = {};
-const MAX_SNAPSHOTS = 60; // например: 12 × 5 мин = 1 час
+const MAX_SNAPSHOTS = 300; // 300 минут = 5 часов для EMA(200) global trend detection
 
 const SNAPSHOT_DIR = path.dirname(LOG_PATH);
 const BACKTEST_SNAPSHOT_FILE = path.join(SNAPSHOT_DIR, 'SNAPS_BACKTEST.jsonl');

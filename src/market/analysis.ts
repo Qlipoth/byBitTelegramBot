@@ -1,6 +1,87 @@
 import { getTrendThresholds, TREND_THRESHOLDS } from './constants.market.js';
 import type { MarketDelta, MarketPhase, MarketSnapshot } from './types.js';
 
+/**
+ * Рассчитывает EMA (Exponential Moving Average)
+ * @param prices - массив цен (от старых к новым)
+ * @param period - период EMA
+ * @returns значение EMA или null если недостаточно данных
+ */
+export function calculateEMA(prices: number[], period: number): number | null {
+  if (prices.length < period) return null;
+
+  const multiplier = 2 / (period + 1);
+
+  // SMA для начального значения
+  let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+  // EMA для остальных значений
+  for (let i = period; i < prices.length; i++) {
+    ema = (prices[i]! - ema) * multiplier + ema;
+  }
+
+  return ema;
+}
+
+/**
+ * Определяет глобальный тренд по EMA(50) vs EMA(200)
+ * @param snapshots - массив снапшотов (минимум 200 для надёжности)
+ * @returns 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+ */
+export type GlobalTrend = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+
+export function detectGlobalTrend(snapshots: MarketSnapshot[]): GlobalTrend {
+  if (snapshots.length < 200) {
+    // Недостаточно данных для надёжного определения
+    return 'NEUTRAL';
+  }
+
+  const prices = snapshots.map(s => s.price);
+  const ema50 = calculateEMA(prices, 50);
+  const ema200 = calculateEMA(prices, 200);
+
+  if (ema50 === null || ema200 === null) {
+    return 'NEUTRAL';
+  }
+
+  // Добавляем небольшой буфер (0.1%) чтобы избежать частых переключений
+  const buffer = ema200 * 0.001;
+
+  if (ema50 > ema200 + buffer) {
+    return 'BULLISH';
+  }
+
+  if (ema50 < ema200 - buffer) {
+    return 'BEARISH';
+  }
+
+  return 'NEUTRAL';
+}
+
+/**
+ * Проверяет, разрешён ли вход в указанную сторону по глобальному тренду
+ */
+export function isTradeAllowedByGlobalTrend(
+  globalTrend: GlobalTrend,
+  side: 'LONG' | 'SHORT'
+): boolean {
+  if (globalTrend === 'NEUTRAL') {
+    // В нейтральном тренде разрешаем обе стороны (но с осторожностью)
+    return true;
+  }
+
+  if (globalTrend === 'BULLISH' && side === 'LONG') {
+    return true;
+  }
+
+  if (globalTrend === 'BEARISH' && side === 'SHORT') {
+    return true;
+  }
+
+  // Торговля против тренда запрещена
+  return false;
+}
+
 type PhaseDetectionSettings = {
   moveThreshold: number;
   cvdThreshold: number;
