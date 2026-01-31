@@ -129,7 +129,7 @@ export async function fetchBybitCandles(
     if (batch.length < limit) break;
     if (currentStart >= end) break;
 
-    await new Promise(resolve => setTimeout(resolve, 150));
+    await new Promise(resolve => setTimeout(resolve, 400));
   }
 
   const finalCandles = allCandles.filter(c => c.timestamp >= start && c.timestamp <= end);
