@@ -7,6 +7,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm test
 RUN pnpm build
+RUN pnpm prune --prod
 
 # Финальный образ
 FROM node:20-alpine

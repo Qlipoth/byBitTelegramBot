@@ -1,0 +1,38 @@
+# Зависимости (в образе ставим через pnpm install)
+node_modules/
+
+# Git и артефакты
+.git
+.gitignore
+*.log
+.kilocodemodes
+ai_memory.json
+error_log.txt
+
+# Секреты (не должны попадать в образ)
+.env
+.env.*
+!.env.example
+
+# Сборка и кэш
+dist/
+build/
+cache/
+models/
+
+# Тесты и исходники не нужны в контексте после сборки (уже скопированы до build)
+# Оставляем их в COPY . . для pnpm test и pnpm build
+
+# IDE и ОС
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Документация и прочее (опционально, уменьшает контекст)
+README.md
+LICENSE
+realSnaps.json
+scripts/analyze*.mjs
+scripts/debug*.mjs
+scripts/download*.ts
