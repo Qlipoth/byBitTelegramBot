@@ -356,6 +356,50 @@ async function runBacktest(
         .join(', ') || 'нет закрытых сделок'
     }`
   );
+
+  // По месяцам: винрейт, PnL, STOP vs MEAN, средний выигрыш/убыток
+  const byMonth = new Map<
+    string,
+    { wins: number; losses: number; pnl: number; stopCount: number; meanCount: number; winSum: number; lossSum: number }
+  >();
+  for (const t of trades) {
+    const date = new Date(t.entryTime);
+    const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+    const row = byMonth.get(key) ?? {
+      wins: 0,
+      losses: 0,
+      pnl: 0,
+      stopCount: 0,
+      meanCount: 0,
+      winSum: 0,
+      lossSum: 0,
+    };
+    if (t.pnl > 0) {
+      row.wins++;
+      row.winSum += t.pnl;
+    } else {
+      row.losses++;
+      row.lossSum += t.pnl;
+    }
+    row.pnl += t.pnl;
+    if (t.reason === 'STOP') row.stopCount++;
+    else if (t.reason === 'MEAN') row.meanCount++;
+    byMonth.set(key, row);
+  }
+  const sortedMonths = [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  if (sortedMonths.length) {
+    console.log('--- По месяцам (Winrate % | PnL USD | STOP/MEAN | avg win/loss) ---');
+    for (const [month, row] of sortedMonths) {
+      const total = row.wins + row.losses;
+      const wr = total ? ((row.wins / total) * 100).toFixed(1) : '0';
+      const pnlStr = row.pnl >= 0 ? `+${row.pnl.toFixed(2)}` : row.pnl.toFixed(2);
+      const avgWin = row.wins ? (row.winSum / row.wins).toFixed(2) : '-';
+      const avgLoss = row.losses ? (row.lossSum / row.losses).toFixed(2) : '-';
+      console.log(
+        `  ${month}: ${wr}% (W:${row.wins} L:${row.losses}) | PnL: ${pnlStr} | STOP:${row.stopCount} MEAN:${row.meanCount} | avg win: ${avgWin} avg loss: ${avgLoss}`
+      );
+    }
+  }
 }
 
 async function runBacktestFromApi(params: {
