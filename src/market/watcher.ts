@@ -14,6 +14,7 @@ import {
   COINS_COUNT,
   BASE_IMPULSE_THRESHOLDS,
   LIQUID_IMPULSE_THRESHOLDS,
+  SYNC_OPEN_POSITION_INTERVAL_MS,
 } from './constants.market.js';
 import {
   calculateEntryScores,
@@ -312,6 +313,8 @@ export async function startMarketWatcher(
   }
 
   let intervalId: NodeJS.Timeout | null = null;
+  /** Время последней синхронизации позиции с биржей (для обнаружения закрытия стопом/ликвидацией). */
+  let lastOpenPositionSyncAt = 0;
   const tick = async () => {
     try {
       const logData: Record<string, any> = {};
@@ -631,6 +634,24 @@ export async function startMarketWatcher(
         }
       }
 
+      // Периодическая проверка позиции на бирже: если локально OPEN, но на бирже позиции нет — закрыли стопом/ликвидацией
+      let closedExternallyPos: ReturnType<TradeExecutor['getPosition']> = undefined;
+      if (
+        fsm.state === 'OPEN' &&
+        tradeExecutor.hasPosition(symbol) &&
+        typeof tradeExecutor.syncPositionFromExchange === 'function' &&
+        now - lastOpenPositionSyncAt >= SYNC_OPEN_POSITION_INTERVAL_MS
+      ) {
+        closedExternallyPos = tradeExecutor.getPosition(symbol);
+        try {
+          await tradeExecutor.syncPositionFromExchange(symbol);
+        } catch (e) {
+          console.error(`[WATCHER] syncPositionFromExchange failed (${symbol}):`, e);
+          closedExternallyPos = undefined;
+        }
+        lastOpenPositionSyncAt = now;
+      }
+
       const hadPending = tradeExecutor.hasPending(symbol);
       if (hadPending) {
         try {
@@ -641,6 +662,33 @@ export async function startMarketWatcher(
       }
 
       const hasOpen = tradeExecutor.hasPosition(symbol);
+
+      // Позиция была закрыта на бирже (стоп/ликвидация) — шлём алерт и сбрасываем FSM
+      if (closedExternallyPos && !hasOpen) {
+        const pnl =
+          (
+            ((snap.price - closedExternallyPos.entryPrice) / closedExternallyPos.entryPrice) *
+            (closedExternallyPos.side === 'LONG' ? 100 : -100)
+          ).toFixed(2);
+        log(
+          `[TRADE] ⚪ EXIT (на бирже) ${closedExternallyPos.side} for ${symbol} | PnL: ${pnl}% | Причина: стоп/ликвидация на бирже`
+        );
+        try {
+          const alertMsg =
+            `⚪ *${symbol}: ПОЗИЦИЯ ЗАКРЫТА НА БИРЖЕ*\n` +
+            `(стоп-лосс или ликвидация)\n` +
+            `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
+            `Цена: ${snap.price}\n`;
+          await Promise.resolve(onAlert(alertMsg));
+        } catch (alertErr) {
+          console.error(`❌ [${symbol}] Не удалось отправить алерт о закрытии на бирже:`, alertErr);
+        }
+        fsm.state = 'IDLE';
+        fsm.side = null;
+        fsm.openedAt = undefined;
+        fsm.lastExitAt = now;
+        return true;
+      }
       const hasExposure = tradeExecutor.hasExposure(symbol);
 
       const currentPos = tradeExecutor.getPosition(symbol);
@@ -774,13 +822,19 @@ export async function startMarketWatcher(
           log(
             `[TRADE] 🚀 ENTER ${fsm.side} for ${symbol} | Phase: ${state.phase} | Balance: ${balance} | Time: ${entryTimeStr}`
           );
-          onAlert(
-            `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
-              `Тип: ${fsm.side === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}\n` +
-              `Фаза: *${state.phase.toUpperCase()}*\n` + // Видим фазу
-              `Цена: ${snap.price}\n` +
-              `Score: L:${longScore} S:${shortScore}`
-          );
+          try {
+            await Promise.resolve(
+              onAlert(
+                `✅ *${symbol}: ВХОД В СДЕЛКУ*\n` +
+                  `Тип: ${fsm.side === 'LONG' ? 'LONG 🟢' : 'SHORT 🔴'}\n` +
+                  `Фаза: *${state.phase.toUpperCase()}*\n` +
+                  `Цена: ${snap.price}\n` +
+                  `Score: L:${longScore} S:${shortScore}`
+              )
+            );
+          } catch (alertErr) {
+            console.error(`❌ [${symbol}] Не удалось отправить алерт о входе:`, alertErr);
+          }
           state.lastConfirmationAt = now;
         } else {
           console.warn(
@@ -824,7 +878,9 @@ export async function startMarketWatcher(
             ).toFixed(2)
           : '0';
 
-        const entryTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
+        const entryTimeStr = pos?.entryTime
+          ? dayjs(pos.entryTime).format('YYYY-MM-DD HH:mm:ss')
+          : dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
         const closeTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
 
         log(
@@ -832,12 +888,16 @@ export async function startMarketWatcher(
             ` | Opened: ${entryTimeStr} | Closed: ${closeTimeStr}`
         );
 
-        onAlert(
-          `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +
+        try {
+          const alertMsg =
+            `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +
             `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
             `Причина: *${effectiveExitReason}*\n` +
-            `Цена: ${snap.price}\n`
-        );
+            `Цена: ${snap.price}\n`;
+          await Promise.resolve(onAlert(alertMsg));
+        } catch (alertErr) {
+          console.error(`❌ [${symbol}] Не удалось отправить алерт о закрытии:`, alertErr);
+        }
       }
 
       // 4. ОБРАБОТКА ОТМЕНЫ (Если сетап не подтвердился)

@@ -128,6 +128,10 @@ async function startWatchersOnce() {
     console.log('📊 Entry mode: adaptive (Bollinger 1h, как в бэктесте)');
   }
   stopWatchers = await initializeMarketWatcher(async msg => {
+    if (subscribers.size === 0) {
+      console.warn('Alert not sent: no subscribers (send /start to subscribe)');
+      return;
+    }
     for (const chatId of subscribers) {
       try {
         await bot.api.sendMessage(chatId, msg, {

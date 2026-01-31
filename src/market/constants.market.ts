@@ -48,6 +48,9 @@ export const INTERVALS = {
   ONE_HOUR: 60 * 60 * 1000,
 } as const;
 
+/** Как часто проверять позицию на бирже, когда локально считаем что она открыта (обнаружение стопа/ликвидации). */
+export const SYNC_OPEN_POSITION_INTERVAL_MS = 3 * 60 * 1000; // 3 минуты
+
 // Base thresholds for normal coins
 export const BASE_ALERT_THRESHOLDS = {
   // Volume thresholds (in % change)

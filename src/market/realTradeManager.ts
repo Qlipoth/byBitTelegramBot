@@ -98,7 +98,12 @@ export class RealTradeManager implements TradeExecutor {
     }
   }
 
-  async syncExchangePosition(symbol: string) {
+  /** Синхронизирует локальное состояние позиции с биржей (для обнаружения закрытия стопом/ликвидацией). */
+  async syncPositionFromExchange(symbol: string): Promise<void> {
+    return this.syncExchangePosition(symbol);
+  }
+
+  private async syncExchangePosition(symbol: string) {
     const posResp = await bybitClient.getPositionInfo({
       category: 'linear',
       symbol,

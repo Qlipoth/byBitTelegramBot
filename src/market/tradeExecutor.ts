@@ -41,6 +41,8 @@ export interface TradeExecutor {
   hasExposure(symbol: string): boolean;
   getPosition(symbol: string): TradePosition | undefined;
   syncSymbol(symbol: string): Promise<void>;
+  /** Синхронизировать состояние позиции с биржей (для обнаружения закрытия стопом/ликвидацией). Реал-торговля реализует; бэктест/бумага — no-op. */
+  syncPositionFromExchange?(symbol: string): Promise<void>;
   openPosition(params: OpenPositionParams): Promise<boolean>;
   closePosition(symbol: string, context?: ClosePositionContext): Promise<void>;
 }
