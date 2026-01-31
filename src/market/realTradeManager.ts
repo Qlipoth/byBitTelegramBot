@@ -285,6 +285,19 @@ export class RealTradeManager implements TradeExecutor {
         return false;
       }
 
+      // Проверка по бирже: если другой экземпляр бота уже открыл позицию — не открывать
+      const posResp = await bybitClient.getPositionInfo({ category: 'linear', symbol });
+      if (posResp.retCode === 0 && Array.isArray(posResp.result?.list)) {
+        const hasPosOnExchange = posResp.result.list.some(
+          (p: { size?: string }) => Math.abs(Number(p.size ?? 0)) > 0
+        );
+        if (hasPosOnExchange) {
+          console.log(`⚠️ [${symbol}] На бирже уже есть позиция (другой экземпляр?) — пропуск`);
+          this.syncExchangePosition(symbol);
+          return false;
+        }
+      }
+
       // Защитный лимит (чуть хуже рынка)
       const limitPrice =
         side === 'LONG'
