@@ -39,8 +39,9 @@ export const CONFIG = {
   // В тренде мы даем позиции "подышать", чтобы забрать большое движение.
   MAX_TREND_HOLD: 90 * 60 * 1000, // 90 минут
 
-  // Общий лимит на случай, если фаза не определена
-  MAX_POSITION_DURATION: 45 * 60 * 1000, // 45 минут
+  // Общий лимит: для adaptive (Bollinger) в бэктесте среднее ~6–7 ч до MEAN/STOP.
+  // 45 мин резало рано; 8 ч — многовато. Ставим 6 ч.
+  MAX_POSITION_DURATION: 6 * 60 * 60 * 1000, // 6 часов
 };
 
 function getPhaseHoldLimit(phase: string): number {
