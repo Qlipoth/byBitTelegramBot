@@ -3,10 +3,12 @@
    =============================== */
 dotenv.config();
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import path from 'node:path';
 
 let isShuttingDown = false;
 let stopWatchers: (() => void) | null = null;
+let healthServer: http.Server | null = null;
 
 const subscribers = new Set<number>();
 const activeTimestamps = new Map<number, number>();
@@ -26,7 +28,10 @@ async function shutdown(signal: string) {
 
   stopWatchers?.();
   stopWatchers = null;
-
+  if (healthServer) {
+    healthServer.close();
+    healthServer = null;
+  }
   try {
     await bot.stop();
   } catch (err) {
@@ -78,6 +83,16 @@ if (missingVars.length) {
    =============================== */
 
 const bot = new Bot(process.env.BOT_TOKEN!);
+
+// Health check для Koyeb (ожидает HTTP на PORT)
+const PORT = Number(process.env.PORT) || 8000;
+healthServer = http.createServer((_req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('OK');
+});
+healthServer.listen(PORT, () => {
+  console.log(`Health check on :${PORT}`);
+});
 
 /* ===============================
    KEYBOARD
@@ -309,9 +324,19 @@ bot.command('stats', async ctx => {
   const loadingMsg = await ctx.reply('🔄 Loading stats...');
 
   try {
-    // Статистика с 29 января 00:00
-    const start = dayjs(new Date(2026, 0, 29, 0, 0, 0, 0));
-    const end = dayjs();
+    // Опционально: /stats 2026-02 — статистика за месяц для сравнения с бэктестом
+    const text = ctx.message?.text?.trim() ?? '';
+    const monthMatch = text.match(/\/stats\s+(\d{4})-(\d{2})/);
+    let start: dayjs.Dayjs;
+    let end: dayjs.Dayjs;
+    if (monthMatch) {
+      const [, y, m] = monthMatch;
+      start = dayjs(`${y}-${m}-01`).startOf('day');
+      end = dayjs(`${y}-${m}-01`).endOf('month');
+    } else {
+      start = dayjs(new Date(2026, 0, 29, 0, 0, 0, 0));
+      end = dayjs();
+    }
     const startTime = start.valueOf();
     const endTime = end.valueOf();
 
