@@ -39,8 +39,8 @@ export const STRATEGY_CONFIG = {
     rsiLongPeriod: 14,
     rsiNeutral: 50,
     rsiDeadband: 10,            // Строже RSI — не входим в зоне флэта
-    signalThreshold: 70,      // Только явные сетапы
-    scoreGap: 15,              // Чёткое преимущество long vs short
+    signalThreshold: 65,      // Было 70 — L/S не дотягивали; чуть мягче для больше сетапов
+    scoreGap: 12,             // Было 15 — чуть мягче при сохранении преимущества long vs short
     minBandDistance: 0.008,     // Вход только при достаточном отходе от средней (1h)
     emaTrendTolerance: 0.001,
     clusterAtrFactor: 0.35,    // Чуть сильнее кластер
