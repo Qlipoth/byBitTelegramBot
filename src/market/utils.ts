@@ -153,6 +153,7 @@ export function calculateEntryScores(
    3️⃣ OI CONFIRMATION — подтверждение позициями (макс +15)
    Растущий OI = новые позиции = уверенность
   ===================== */
+  const OI_FALL_THRESHOLD = 0.2;
   if (oi15 > 0.05) {
     // OI растёт — уверенный вход в рынок
     const oiBonus = Math.min(oi15 * 30, 15); // 0.5% OI = 15 баллов
@@ -162,11 +163,15 @@ export function calculateEntryScores(
       awardScore('SHORT', oiBonus, 'OI_CONFIRM', `oi15=${oi15.toFixed(2)}% growing`);
     }
     details.oi = Math.round(oiBonus);
-  } else if (oi15 < -0.2) {
-    // OI падает — позиции закрываются, НО это не блокирует
-    // Просто не даём бонус
+  } else if (oi15 < -OI_FALL_THRESHOLD) {
+    // OI падает — позиции закрываются: не даём бонус + штраф за вход "вдогонку"
     logger(`[OI] Positions closing (${oi15.toFixed(2)}%), no bonus`);
     details.oi = 0;
+    if (price15m > 0.05) {
+      awardScore('LONG', -10, 'OI_SHORT_COVER', 'price up + OI down — не гнаться за лонгом');
+    } else if (price15m < -0.05) {
+      awardScore('SHORT', -10, 'OI_LONG_UNWIND', 'price down + OI down — не гнаться за шортом');
+    }
   } else {
     details.oi = 0;
   }

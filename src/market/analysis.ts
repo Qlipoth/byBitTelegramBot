@@ -90,26 +90,60 @@ type PhaseDetectionSettings = {
   realizedVol?: number;
 };
 
+export type DetectTrendResult = {
+  label: string;
+  isBull: boolean;
+  isBear: boolean;
+  /** Цена растёт + OI падает — шортисты закрываются, скоро разворот/затухание */
+  isShortCover?: boolean;
+  /** Цена падает + OI падает — лонгисты закрываются, тренд выдыхается */
+  isLongUnwind?: boolean;
+};
+
 export function detectTrend(deltaBase: {
   priceChangePct: number;
   oiChangePct: number;
   symbol?: string;
-}) {
-  const { PRICE_CHANGE, OI_CHANGE, ACCUMULATION_PRICE_BAND } = deltaBase.symbol
+}): DetectTrendResult {
+  const thresholds = deltaBase.symbol
     ? getTrendThresholds(deltaBase.symbol)
     : TREND_THRESHOLDS;
+  const { PRICE_CHANGE, OI_CHANGE, OI_FALL_THRESHOLD = 0.2, ACCUMULATION_PRICE_BAND } = thresholds;
+  const p = deltaBase.priceChangePct;
+  const oi = deltaBase.oiChangePct;
+  const priceMove = PRICE_CHANGE * 0.5;
 
-  if (deltaBase.priceChangePct > PRICE_CHANGE && deltaBase.oiChangePct > OI_CHANGE) {
+  if (p > PRICE_CHANGE && oi > OI_CHANGE) {
     return { label: '📈 Бычий тренд', isBull: true, isBear: false };
   }
 
-  if (deltaBase.priceChangePct < -PRICE_CHANGE && deltaBase.oiChangePct > OI_CHANGE) {
+  if (p < -PRICE_CHANGE && oi > OI_CHANGE) {
     return { label: '📉 Медвежий тренд', isBull: false, isBear: true };
   }
 
+  // Цена растёт + OI падает — Short cover, скоро разворот или затухание
+  if (p > priceMove && oi < -OI_FALL_THRESHOLD) {
+    return {
+      label: '🔄 Short cover / затухание',
+      isBull: false,
+      isBear: false,
+      isShortCover: true,
+    };
+  }
+
+  // Цена падает + OI падает — Long unwind, тренд выдыхается
+  if (p < -priceMove && oi < -OI_FALL_THRESHOLD) {
+    return {
+      label: '🔄 Long unwind / тренд выдыхается',
+      isBull: false,
+      isBear: false,
+      isLongUnwind: true,
+    };
+  }
+
   if (
-    Math.abs(deltaBase.priceChangePct) < ACCUMULATION_PRICE_BAND &&
-    deltaBase.oiChangePct > OI_CHANGE
+    Math.abs(p) < ACCUMULATION_PRICE_BAND &&
+    oi > OI_CHANGE
   ) {
     return { label: '🧠 Фаза накопления', isBull: false, isBear: false };
   }

@@ -144,6 +144,8 @@ export const LIQUID_STRUCTURE_THRESHOLDS = {
 export const BASE_TREND_THRESHOLDS = {
   PRICE_CHANGE: 1.2, // 2% -> 1.2% (More realistic for alts)
   OI_CHANGE: 2.0, // 5% -> 2.0% (Easier to confirm trend)
+  /** Порог падения OI (%). Ниже — считаем "OI падает" (Short cover / Long unwind). */
+  OI_FALL_THRESHOLD: 0.2,
   ACCUMULATION_PRICE_BAND: 1, // 1% price band for accumulation
 } as const;
 
@@ -151,6 +153,7 @@ export const BASE_TREND_THRESHOLDS = {
 export const LIQUID_TREND_THRESHOLDS = {
   PRICE_CHANGE: 0.5, // Aligned with MARKET_SETTINGS.LIQUID.moveThreshold
   OI_CHANGE: 0.3, // Aligned with MARKET_SETTINGS.LIQUID.oiThreshold
+  OI_FALL_THRESHOLD: 0.2,
   ACCUMULATION_PRICE_BAND: 0.4, // Tighter accumulation band
 } as const;
 

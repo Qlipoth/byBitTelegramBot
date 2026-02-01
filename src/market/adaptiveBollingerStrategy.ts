@@ -46,6 +46,7 @@ const CLUSTER_ATR_FACTOR = adaptiveConfig.clusterAtrFactor;
 const BAND_SLIPPAGE_TOLERANCE = adaptiveConfig.bandSlippageTolerance;
 const MAX_EMA_DISTANCE_LONG = adaptiveConfig.maxEmaDistanceForLong ?? 0.02;
 const MAX_EMA_DISTANCE_SHORT = adaptiveConfig.maxEmaDistanceForShort ?? 0.02;
+const MIN_BOLLINGER_WIDTH_PCT = adaptiveConfig.minBollingerWidthPct ?? 0.012;
 const DEFAULT_SUPPORTED = adaptiveConfig.supportedSymbols;
 
 function sma(v: number[]) {
@@ -91,11 +92,23 @@ export class AdaptiveBollingerEmaStrategy {
 
     this.contextMap.set(symbol, ctx);
 
-    const { close, upper, lower, rsiLong } = ctx;
+    const { close, upper, lower, middle, rsiLong } = ctx;
     const distancePct = this.getBandDistance(ctx);
     const emaBias = this.getEmaBias(ctx);
     const bullCluster = this.isBullCluster(ctx);
     const bearCluster = this.isBearCluster(ctx);
+    const bandWidthPct = middle > 0 ? (upper - lower) / middle : 0;
+
+    if (bandWidthPct < MIN_BOLLINGER_WIDTH_PCT) {
+      return {
+        ready: true,
+        signal: 'NONE',
+        entrySignal: 'NARROW CHANNEL',
+        longScore: 0,
+        shortScore: 0,
+        details: { rsiLong, distancePct, emaBias, bandWidthPct },
+      };
+    }
 
     const allowLong = rsiLong <= RSI_NEUTRAL - RSI_DEADBAND;
     const allowShort = rsiLong >= RSI_NEUTRAL + RSI_DEADBAND;
@@ -150,6 +163,8 @@ export class AdaptiveBollingerEmaStrategy {
 
     const distancePct = this.getBandDistance(ctx);
     const emaBias = this.getEmaBias(ctx);
+    const bandWidthPct = ctx.middle > 0 ? (ctx.upper - ctx.lower) / ctx.middle : 0;
+    if (bandWidthPct < MIN_BOLLINGER_WIDTH_PCT) return false;
 
     if (signal === 'LONG') {
       return (
