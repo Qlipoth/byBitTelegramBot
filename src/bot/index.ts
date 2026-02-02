@@ -9,6 +9,7 @@ import path from 'node:path';
 let isShuttingDown = false;
 let stopWatchers: (() => void) | null = null;
 let healthServer: http.Server | null = null;
+let keepAliveIntervalId: ReturnType<typeof setInterval> | null = null;
 
 const subscribers = new Set<number>();
 const activeTimestamps = new Map<number, number>();
@@ -28,6 +29,10 @@ async function shutdown(signal: string) {
 
   stopWatchers?.();
   stopWatchers = null;
+  if (keepAliveIntervalId) {
+    clearInterval(keepAliveIntervalId);
+    keepAliveIntervalId = null;
+  }
   if (healthServer) {
     healthServer.close();
     healthServer = null;
@@ -84,15 +89,33 @@ if (missingVars.length) {
 
 const bot = new Bot(process.env.BOT_TOKEN!);
 
-// Health check для Koyeb (ожидает HTTP на PORT)
+// Health check для Koyeb: любой входящий HTTP = "трафик", иначе инстанс уходит в deep sleep
 const PORT = Number(process.env.PORT) || 8000;
-healthServer = http.createServer((_req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('OK');
+healthServer = http.createServer((req, res) => {
+  const url = req.url ?? '/';
+  if (url === '/health' || url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', ts: Date.now() }));
+  } else {
+    res.writeHead(404);
+    res.end();
+  }
 });
 healthServer.listen(PORT, () => {
-  console.log(`Health check on :${PORT}`);
+  console.log(`Health check on :${PORT} (GET / or /health)`);
 });
+
+// Self-ping: раз в ~8 мин дергаем свой публичный URL, чтобы Koyeb видел трафик и не уводил инстанс в deep sleep (без сторонних сервисов)
+const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL?.trim();
+if (APP_PUBLIC_URL) {
+  const KEEP_ALIVE_MS = 8 * 60 * 1000; // 8 минут
+  keepAliveIntervalId = setInterval(() => {
+    fetch(APP_PUBLIC_URL, { method: 'GET' }).catch(() => {
+      // игнорируем ошибки (сеть, таймаут) — следующий пинг через 8 мин
+    });
+  }, KEEP_ALIVE_MS);
+  console.log(`Keep-alive: self-ping every ${KEEP_ALIVE_MS / 60000} min → ${APP_PUBLIC_URL}`);
+}
 
 /* ===============================
    KEYBOARD
