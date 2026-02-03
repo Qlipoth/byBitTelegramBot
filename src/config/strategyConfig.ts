@@ -44,7 +44,7 @@ export const STRATEGY_CONFIG = {
     minBandDistance: 0.008,     // Вход только при достаточном отходе от средней (1h)
     emaTrendTolerance: 0.001,
     clusterAtrFactor: 0.35,    // Чуть сильнее кластер
-    bandSlippageTolerance: 0.0015, // Жёстче у полосы
+    bandSlippageTolerance: 0.004, // 0.4% — входим, если цена «чуть не дотянула» до полосы
     maxEmaDistanceForLong: 0.02,   // Не лонг, если цена >2% ниже EMA (сильный даунтренд)
     maxEmaDistanceForShort: 0.02, // Не шорт, если цена >2% выше EMA (сильный аптренд)
     /** Минимальная ширина канала Боллинджера (upper−lower)/middle. Ниже — не входим (сжатие, риск пробоя). */
