@@ -108,7 +108,8 @@ healthServer.listen(PORT, () => {
 // Self-ping: раз в ~8 мин дергаем свой публичный URL, чтобы Koyeb видел трафик и не уводил инстанс в deep sleep (без сторонних сервисов)
 const APP_PUBLIC_URL = process.env.APP_PUBLIC_URL?.trim();
 if (APP_PUBLIC_URL) {
-  const KEEP_ALIVE_MS = 8 * 60 * 1000; // 8 минут
+  debugger;
+  const KEEP_ALIVE_MS = 1 * 60 * 1000; // 8 минут
   keepAliveIntervalId = setInterval(() => {
     fetch(APP_PUBLIC_URL, { method: 'GET' }).catch(() => {
       // игнорируем ошибки (сеть, таймаут) — следующий пинг через 8 мин
@@ -150,21 +151,24 @@ async function startWatchersOnce() {
   if (entryMode === 'adaptive') {
     console.log('📊 Entry mode: adaptive (Bollinger 1h, как в бэктесте)');
   }
-  stopWatchers = await initializeMarketWatcher(async msg => {
-    if (subscribers.size === 0) {
-      console.warn('Alert not sent: no subscribers (send /start to subscribe)');
-      return;
-    }
-    for (const chatId of subscribers) {
-      try {
-        await bot.api.sendMessage(chatId, msg, {
-          parse_mode: 'Markdown',
-        });
-      } catch (e) {
-        console.error('Send failed:', chatId, e);
+  stopWatchers = await initializeMarketWatcher(
+    async msg => {
+      if (subscribers.size === 0) {
+        console.warn('Alert not sent: no subscribers (send /start to subscribe)');
+        return;
       }
-    }
-  }, { entryMode });
+      for (const chatId of subscribers) {
+        try {
+          await bot.api.sendMessage(chatId, msg, {
+            parse_mode: 'Markdown',
+          });
+        } catch (e) {
+          console.error('Send failed:', chatId, e);
+        }
+      }
+    },
+    { entryMode }
+  );
 
   console.log('🚀 Market watchers started');
 }

@@ -41,7 +41,7 @@ export const CONFIG = {
 
   // Общий лимит: для adaptive (Bollinger) в бэктесте среднее ~6–7 ч до MEAN/STOP.
   // 45 мин резало рано; 8 ч — многовато. Ставим 6 ч.
-  MAX_POSITION_DURATION: 6 * 60 * 60 * 1000, // 6 часов
+  MAX_POSITION_DURATION: 24 * 60 * 60 * 1000, // 24 часа — не скальп, держим до MEAN/STOP
 };
 
 function getPhaseHoldLimit(phase: string): number {
