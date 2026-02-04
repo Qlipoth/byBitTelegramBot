@@ -1,18 +1,28 @@
-# ByBit Market Bot 🤖
+# ByBit Market Bot
 
-A sophisticated trading bot for ByBit cryptocurrency exchange that monitors market conditions, detects trading opportunities, and sends alerts via Telegram.
+Telegram bot for **ByBit** that runs a **Bollinger Bands mean-reversion strategy** on linear perpetuals (e.g. BTCUSDT, ETHUSDT, SOLUSDT). It opens and closes positions automatically and sends entry/exit alerts to Telegram.
 
-## ✨ Features
+## Strategy
 
-- Real-time market monitoring of top liquid coins
-- Advanced squeeze detection (short and long)
-- Volume and price action analysis
-- Open Interest (OI) accumulation detection
-- Trend analysis and momentum detection
-- Customizable alert thresholds
-- Telegram notifications
+- **Logic:** Mean reversion using Bollinger Bands (20-period, 2.2 std) on **1h** candles.
+- **Entry:** LONG when price is at or near the **lower band** (oversold); SHORT when price is at or near the **upper band** (overbought). Filters: RSI, EMA bias, band width (no entry in a tight squeeze), optional OI/trend context.
+- **Exit:**  
+  - **MEAN** — close when price reaches the **middle band** (target).  
+  - **STOP** — catastrophic stop (e.g. −7% from entry) if price moves against the position before reaching the middle.
+- **Max hold:** Configurable (e.g. 24h); beyond that the position is closed by time.
 
-## 🚀 Installation
+The bot can run in **adaptive** (Bollinger) or **classic** (trend/phase) entry mode; adaptive is the default and matches the backtests.
+
+## Features
+
+- Real-time monitoring of top liquid coins (configurable list).
+- Bollinger-based mean-reversion entries and MEAN/STOP exits.
+- Telegram alerts for position open and close (with PnL and reason).
+- Optional: Price + Open Interest context (trend confirmation, Short cover / Long unwind).
+- Health HTTP server for deployment (e.g. Koyeb) and optional self-ping via `APP_PUBLIC_URL`.
+- **Backtests** for the same strategy on historical ByBit 5m candles.
+
+## Installation
 
 1. Clone the repository:
    ```bash
@@ -22,123 +32,116 @@ A sophisticated trading bot for ByBit cryptocurrency exchange that monitors mark
 
 2. Install dependencies:
    ```bash
-   npm install
-   # or
-   yarn
-   # or
    pnpm install
    ```
 
-3. Copy `.env.example` to `.env` and fill in your API keys:
-   ```bash
-   cp .env.example .env
-   ```
+3. Create a `.env` file (see Configuration below).
 
-## ⚙️ Configuration
+## Configuration
 
-Create a `.env` file in the root directory with the following variables:
+Create a `.env` file in the project root:
 
 ```env
-# Telegram Bot Token from @BotFather
+# Required
 BOT_TOKEN=your_telegram_bot_token
-
-# ByBit API Credentials
 BYBIT_API_KEY=your_bybit_api_key
 BYBIT_SECRET_KEY=your_bybit_secret_key
 
-# Optional: Customize alert thresholds (see src/market/constants.market.ts)
+# Optional
+PORT=8000
+ENTRY_MODE=adaptive
+APP_PUBLIC_URL=https://your-app.koyeb.app
 ```
 
-## 🏃‍♂️ Usage
+- **BOT_TOKEN** — from [@BotFather](https://t.me/BotFather).
+- **BYBIT_API_KEY / BYBIT_SECRET_KEY** — ByBit API keys with trading (and optionally read) permissions for linear perpetuals.
+- **PORT** — HTTP server port for health checks (default 8000).
+- **ENTRY_MODE** — `adaptive` (Bollinger) or `classic`.
+- **APP_PUBLIC_URL** — public URL of the app for self-ping keep-alive (e.g. Koyeb); no external pinger needed if set.
+
+Strategy parameters (Bollinger period, bands, stop %, etc.) are in `src/config/strategyConfig.ts`.
+
+## Usage
 
 1. Start the bot:
    ```bash
-   npm start
-   # or
-   yarn start
-   # or
    pnpm start
    ```
 
-2. In Telegram, start a chat with your bot and use the following commands:
+2. In Telegram, send `/start` to your bot to subscribe to alerts. The bot will run the strategy and send messages on position open and close.
 
-## 📋 Commands
+## Telegram Commands
 
-- `/start` - Start receiving market alerts
-- `/market` - Get current market overview
-- `/delta [symbol]` - Analyze price and OI changes for a symbol
+| Command | Description |
+|--------|-------------|
+| `/start` | Subscribe to alerts and start the watchers |
+| `/stop` | Unsubscribe and stop watchers |
+| `/market` | Current market overview (top symbols) |
+| `/status` | Subscribers count and watcher status |
+| `/stats [YYYY-MM]` | Closed PnL stats (optionally for a given month) |
+| `/download_logs` | Download bot log file |
+| `/download_snapshots` | Download snapshot history files |
 
-## 📊 Features in Detail
+## Backtests
 
-### Market Monitoring
-- Tracks top liquid coins with customizable thresholds
-- Real-time price, volume, and OI analysis
-- Customizable alert conditions
+The repository includes an **adaptive Bollinger backtest** that uses the same entry/exit logic on historical 5m candles from ByBit.
 
-### Squeeze Detection
-- Advanced short squeeze detection with RSI confirmation
-- Long squeeze detection with volume and OI analysis
-- Customizable squeeze score thresholds
+- **Script:** `src/backtest/adaptiveBollingerBacktest.ts`
+- **Run (date range + symbol):**
+  ```bash
+  pnpx tsx src/backtest/adaptiveBollingerBacktest.ts <START_ISO> <END_ISO> <SYMBOL>
+  ```
+  Example (ETH, Jun 2025 – Feb 2026):
+  ```bash
+  pnpx tsx src/backtest/adaptiveBollingerBacktest.ts 2025-06-01 2026-02-01 ETHUSDT
+  ```
+- **Output:** Trade count, win rate, net PnL, max drawdown, exit reasons (MEAN/STOP), and per-month breakdown. Candles are cached under `cache/bybit/` to avoid re-downloading.
 
-### Trend Analysis
-- Multi-timeframe trend detection
-- Volume-Weighted Average Price (VWAP) analysis
-- Support/Resistance level detection
+Other scripts in `package.json`:
 
-## 📁 Project Structure
+- `pnpm run backtest:adaptive` — same backtest (pass args after `--` if needed).
+- `pnpm run backtest:bot` — full bot-style backtest (see `src/backtest/botBacktester.ts`).
+
+## Project Structure
 
 ```
 src/
-├── bot/                # Telegram bot implementation
-│   └── index.ts        # Bot entry point and command handlers
-├── market/             # Market analysis logic
-│   ├── compare.ts      # Snapshot comparison utilities
-│   ├── constants.market.ts  # Market constants and thresholds
-│   ├── snapshotStore.ts     # Market data storage
-│   ├── types.ts        # TypeScript interfaces
-│   ├── utils.ts        # Utility functions
-│   └── watcher.ts      # Market watcher implementation
+├── bot/
+│   └── index.ts              # Telegram bot, commands, watcher startup, health server
+├── config/
+│   └── strategyConfig.ts    # Bollinger/adaptive and backtest parameters
+├── market/
+│   ├── adaptiveBollingerStrategy.ts  # Bollinger entry/exit logic
+│   ├── analysis.ts           # Trend, phase, RSI, Price+OI
+│   ├── constants.market.ts   # Intervals, thresholds, symbols
+│   ├── fsm.ts                # Trade FSM, max position duration
+│   ├── realTradeManager.ts   # ByBit order/position execution
+│   ├── watcher.ts            # Per-symbol loop, tick, alerts
+│   └── ...
+├── backtest/
+│   ├── adaptiveBollingerBacktest.ts  # Bollinger backtest runner
+│   ├── candleLoader.ts       # ByBit kline fetch and cache
+│   └── ...
 └── services/
-    └── bybit.ts        # ByBit API client
+    └── bybit.ts              # ByBit API client
 ```
 
-## 🌐 Деплой на Koyeb (free tier)
+## Deployment (e.g. Koyeb)
 
-На бесплатном тарифе Koyeb считает «трафик» только **входящие HTTP-запросы**. Если больше ~1 часа нет запросов, инстанс переводится в deep sleep и затем останавливается (SIGTERM).
+On Koyeb **free tier**, the instance is put into deep sleep after ~1 hour with **no incoming HTTP traffic**. The bot already runs an HTTP server on `PORT` and responds to `GET /` and `GET /health` with `200 OK`.
 
-Бот уже поднимает HTTP-сервер на `PORT` (по умолчанию 8000) и отвечает на `GET /` и `GET /health` кодом 200. Чтобы инстанс не засыпал:
+- Set the service as a **Web Service** and use the assigned public URL.
+- To avoid sleep, trigger **external pings** to that URL every 5–15 minutes (e.g. [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)).
+- Optionally set **APP_PUBLIC_URL** in the app so the bot can self-ping; on free tier, external ping is more reliable.
 
-1. **В Koyeb** создайте сервис как **Web Service**, укажите порт (например 8000) и получите публичный URL вида `https://your-app-xxx.koyeb.app`.
-2. **Включите периодический пинг извне** — любой запрос к вашему URL раз в 15–30 минут считается трафиком:
-   - [UptimeRobot](https://uptimerobot.com) — бесплатный мониторинг, проверка каждые 5 мин.
-   - [cron-job.org](https://cron-job.org) — бесплатный cron: добавьте задачу `GET https://your-app-xxx.koyeb.app/health` с интервалом 15–30 мин.
+## Development
 
-Без внешнего пинга бот будет засыпать после ~1 часа без обращений к HTTP.
+- `pnpm run typecheck` — TypeScript check
+- `pnpm test` — Run tests (Vitest)
+- `pnpm run build` — Build for production (e.g. `node dist/bot.js`)
 
-## 🔧 Development
+All commands use **pnpm**; to run a binary (e.g. `tsx`) use **pnpx** (e.g. `pnpx tsx src/backtest/...`).
 
-### Available Scripts
+## License
 
-- `npm start` - Start the bot in development mode
-- `npm run build` - Compile TypeScript to JavaScript
-- `npm run dev` - Start in development mode with hot-reload
-
-### Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BOT_TOKEN` | Yes | Telegram bot token from @BotFather |
-| `BYBIT_API_KEY` | Yes | Your ByBit API key |
-| `BYBIT_SECRET_KEY` | Yes | Your ByBit API secret key |
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📧 Contact
-
-For any inquiries, please open an issue on GitHub.
+MIT — see [LICENSE](LICENSE).
