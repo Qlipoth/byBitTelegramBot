@@ -591,8 +591,10 @@ export async function startMarketWatcher(
       logData.details = details;
       log(`${symbol}: 0) entrySignal: ${entrySignal} ${JSON.stringify(details)}`);
       if (habrMode && entrySignal === 'NO SETUP') {
-        const need = 'need L or S ≥ 70, gap ≥ 15';
-        log(`[Bollinger NO_SETUP] ${symbol} L=${longScore} S=${shortScore} (${need}) | distancePct=${(details as any)?.distancePct != null ? ((details as any).distancePct * 100).toFixed(2) + '%' : '?'} emaBias=${(details as any)?.emaBias != null ? ((details as any).emaBias * 100).toFixed(2) + '%' : '?'} bearCluster=${(details as any)?.bearCluster ?? '?'}`);
+        const { signalThreshold, scoreGap } = STRATEGY_CONFIG.adaptiveBollinger;
+        const need = `need L or S ≥ ${signalThreshold}, gap ≥ ${scoreGap}`;
+        const atBand = longScore >= 35 || shortScore >= 35 ? '' : ' (цена не у полосы — нет 35 баллов)';
+        log(`[Bollinger NO_SETUP] ${symbol} L=${longScore} S=${shortScore} (${need})${atBand} | distancePct=${(details as any)?.distancePct != null ? ((details as any).distancePct * 100).toFixed(2) + '%' : '?'} emaBias=${(details as any)?.emaBias != null ? ((details as any).emaBias * 100).toFixed(2) + '%' : '?'} bearCluster=${(details as any)?.bearCluster ?? '?'}`);
       }
 
       // =====================
