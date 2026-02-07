@@ -9,8 +9,10 @@ import {
 } from './candleBuilder.js';
 import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 
+/** Entry signal: LONG at lower band, SHORT at upper band, or NONE when no setup. */
 export type AdaptiveSignal = 'LONG' | 'SHORT' | 'NONE';
 
+/** Bollinger + EMA + RSI context for one symbol (built from 1h or 1m candles). */
 interface BollingerContext {
   upper: number;
   lower: number;
@@ -22,12 +24,19 @@ interface BollingerContext {
   candles: { open: number; close: number }[];
 }
 
+/** Result of getSignal: readiness, LONG/SHORT/NONE, scores (L/S), and debug details. */
 export interface AdaptiveSignalResult {
+  /** True if candles and indicators were available. */
   ready: boolean;
+  /** Resolved signal (LONG/SHORT/NONE). */
   signal: AdaptiveSignal;
+  /** Human-readable reason, e.g. "NO SETUP", "NARROW CHANNEL", or the signal name. */
   entrySignal: string;
+  /** Long score 0–100 (35 for price at lower band + filters). */
   longScore: number;
+  /** Short score 0–100 (35 for price at upper band + filters). */
   shortScore: number;
+  /** Extra fields (rsiLong, distancePct, emaBias, bullCluster, bearCluster, allowLong, allowShort). */
   details: Record<string, unknown>;
 }
 
@@ -60,10 +69,15 @@ function ema(v: number[], p: number) {
   return v.reduce((a, c, i) => (i === 0 ? c : c * k + a * (1 - k)));
 }
 
+/**
+ * Bollinger Bands mean-reversion strategy: LONG at lower band, SHORT at upper band.
+ * Uses 1h candles in live when configured; scores L/S by band touch, RSI, EMA bias, and candle clusters.
+ */
 export class AdaptiveBollingerEmaStrategy {
   private contextMap = new Map<string, BollingerContext>();
   private supportedSymbols = new Set<string>(DEFAULT_SUPPORTED);
 
+  /** Returns cached or freshly built Bollinger/EMA/RSI context for the symbol, or null if no data. */
   getContext(symbol: string): BollingerContext | null {
     const cached = this.contextMap.get(symbol);
     if (cached) return cached;
@@ -77,6 +91,12 @@ export class AdaptiveBollingerEmaStrategy {
     return null;
   }
 
+  /**
+   * Computes entry signal and L/S scores for the symbol.
+   * Returns NONE with entrySignal "NO SETUP" when price is not at a band or scores are below threshold.
+   * @param symbol - e.g. "BTCUSDT"
+   * @returns Signal result with ready, signal, entrySignal, longScore, shortScore, details
+   */
   getSignal(symbol: string): AdaptiveSignalResult {
     const ctx = this.buildContext(symbol);
     if (!ctx) {
@@ -156,6 +176,13 @@ export class AdaptiveBollingerEmaStrategy {
     };
   }
 
+  /**
+   * Double-checks that the current market state still satisfies entry conditions for the given signal.
+   * Used after getSignal to avoid entering on stale data (e.g. price moved away from band).
+   * @param symbol - e.g. "BTCUSDT"
+   * @param signal - LONG or SHORT (NONE returns false)
+   * @returns true if entry is still valid (band touch, distance, EMA bias, no bear cluster for LONG)
+   */
   confirmEntry(symbol: string, signal: AdaptiveSignal): boolean {
     if (signal === 'NONE') return false;
     const ctx = this.getContext(symbol);
@@ -188,11 +215,13 @@ export class AdaptiveBollingerEmaStrategy {
     return false;
   }
 
+  /** Returns true if the symbol is in the allowed list (or list is empty = all allowed). */
   isSupported(symbol: string): boolean {
     if (this.supportedSymbols.size === 0) return true;
     return this.supportedSymbols.has(symbol.toUpperCase());
   }
 
+  /** Restricts strategy to the given symbols (e.g. from config supportedSymbols). */
   setSupportedSymbols(symbols: string[]): void {
     this.supportedSymbols = new Set(symbols.map(s => s.toUpperCase()));
   }
@@ -259,4 +288,5 @@ export class AdaptiveBollingerEmaStrategy {
   }
 }
 
+/** Singleton strategy instance used by watcher and backtest. */
 export const adaptiveBollingerStrategy = new AdaptiveBollingerEmaStrategy();

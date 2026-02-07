@@ -126,6 +126,12 @@ src/
     └── bybit.ts              # ByBit API client
 ```
 
+## Architecture / data flow
+
+- **Watcher** (`watcher.ts`) runs a tick every minute per symbol. It fetches 1m snapshots (price, OI, funding) from **Bybit** (`bybit.ts`) and, in adaptive mode, syncs **1h candles** into `candleBuilder` and calls **adaptiveBollingerStrategy.getSignal(symbol)**. If the signal is LONG or SHORT, it then calls **confirmEntry** to re-check conditions before opening a position. The **FSM** (`fsm.ts`) tracks state (IDLE → OPEN) and max position duration; exit is either MEAN (price at middle band) or STOP (catastrophic loss).
+- **Strategy** (`adaptiveBollingerStrategy.ts`) builds Bollinger/EMA/RSI context from 1h (or 1m) candles, scores LONG and SHORT by band touch, RSI, EMA bias, and candle clusters. Entry is allowed only when one score meets the threshold and the gap over the other is large enough. **confirmEntry** re-validates band touch and filters (e.g. no LONG in a strong bear cluster).
+- **Execution**: in live, `realTradeManager` places orders on Bybit and keeps local position in sync; the watcher periodically checks if the position was closed on the exchange (e.g. stop-loss) and resets the FSM. Alerts are sent to Telegram on open and close.
+
 ## Deployment (e.g. Koyeb)
 
 On Koyeb **free tier**, the instance is put into deep sleep after ~1 hour with **no incoming HTTP traffic**. The bot already runs an HTTP server on `PORT` and responds to `GET /` and `GET /health` with `200 OK`.
