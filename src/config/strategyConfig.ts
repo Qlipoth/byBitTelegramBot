@@ -50,7 +50,22 @@ export const STRATEGY_CONFIG = {
     /** Минимальная ширина канала Боллинджера (upper−lower)/middle. Ниже — не входим (сжатие, риск пробоя). */
     minBollingerWidthPct: 0.012,  // 1.2% — в узком канале не входим
     use1hInLive: true,          // В лайве использовать 1h свечи (как в бэктесте)
-    supportedSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT'],
+    /** Режим «только шорт» для альтов: лонг-сигналы игнорируются для символов не из longAndShortSymbols. */
+    shortOnly: true,
+    /** Пары, по которым разрешены и лонг и шорт (основные; для остальных — только шорт). */
+    longAndShortSymbols: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'],
+    supportedSymbols: [
+      'BTCUSDT',
+      'ETHUSDT',
+      'SOLUSDT',
+      'XRPUSDT',
+      'ADAUSDT',
+      'DOGEUSDT',
+      'AVAXUSDT',
+      'DOTUSDT',
+      'UNIUSDT',
+      'HYPEUSDT',
+    ],
   },
   adaptiveBacktest: {
     defaultSymbol: 'ETHUSDT',

@@ -56,6 +56,12 @@ const BAND_SLIPPAGE_TOLERANCE = adaptiveConfig.bandSlippageTolerance;
 const MAX_EMA_DISTANCE_LONG = adaptiveConfig.maxEmaDistanceForLong ?? 0.02;
 const MAX_EMA_DISTANCE_SHORT = adaptiveConfig.maxEmaDistanceForShort ?? 0.02;
 const MIN_BOLLINGER_WIDTH_PCT = adaptiveConfig.minBollingerWidthPct ?? 0.012;
+const SHORT_ONLY = adaptiveConfig.shortOnly === true;
+const LONG_AND_SHORT_SYMBOLS = new Set(
+  ((adaptiveConfig as unknown as { longAndShortSymbols?: readonly string[] }).longAndShortSymbols ?? []).map(s =>
+    s.toUpperCase()
+  )
+);
 const DEFAULT_SUPPORTED = adaptiveConfig.supportedSymbols;
 
 function sma(v: number[]) {
@@ -158,10 +164,20 @@ export class AdaptiveBollingerEmaStrategy {
       signal = 'SHORT';
     }
 
+    const isShortOnlySymbol = SHORT_ONLY && !LONG_AND_SHORT_SYMBOLS.has(symbol.toUpperCase());
+    if (isShortOnlySymbol && signal === 'LONG') {
+      signal = 'NONE';
+    }
+
     return {
       ready: true,
       signal,
-      entrySignal: signal === 'NONE' ? 'NO SETUP' : signal,
+      entrySignal:
+        signal === 'NONE'
+          ? isShortOnlySymbol && longScore >= SIGNAL_THRESHOLD
+            ? 'SHORT_ONLY'
+            : 'NO SETUP'
+          : signal,
       longScore,
       shortScore,
       details: {

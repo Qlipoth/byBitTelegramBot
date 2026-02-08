@@ -150,6 +150,16 @@ async function startWatchersOnce() {
   const entryMode = process.env.ENTRY_MODE === 'classic' ? 'classic' : 'adaptive';
   if (entryMode === 'adaptive') {
     console.log('📊 Entry mode: adaptive (Bollinger 1h, как в бэктесте)');
+    const { STRATEGY_CONFIG } = await import('../config/strategyConfig.js');
+    const { shortOnly, longAndShortSymbols } = STRATEGY_CONFIG.adaptiveBollinger as {
+      shortOnly?: boolean;
+      longAndShortSymbols?: readonly string[];
+    };
+    if (shortOnly && longAndShortSymbols?.length) {
+      console.log(`📉 Short-only для альтов; лонг+шорт: ${longAndShortSymbols.join(', ')}`);
+    } else if (STRATEGY_CONFIG.adaptiveBollinger.shortOnly) {
+      console.log('📉 Short-only: только SHORT');
+    }
   }
   stopWatchers = await initializeMarketWatcher(
     async msg => {
