@@ -59,6 +59,48 @@ export function detectGlobalTrend(snapshots: MarketSnapshot[]): GlobalTrend {
 }
 
 /**
+ * Определяет дневной тренд на основе изменения цены с начала текущего дня.
+ * Более чувствителен к краткосрочным движениям, чем глобальный тренд.
+ * @param snapshots - массив снапшотов (нужен хотя бы один снапшот с начала дня)
+ * @returns 'BULLISH' | 'BEARISH' | 'NEUTRAL'
+ */
+export function detectDailyTrend(snapshots: MarketSnapshot[]): GlobalTrend {
+  if (snapshots.length < 1) {
+    return 'NEUTRAL';
+  }
+
+  const now = Date.now();
+  const startOfDay = new Date(now);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const startOfDayTs = startOfDay.getTime();
+
+  // Находим первый снапшот с начала дня
+  const dailySnapshots = snapshots.filter(s => s.timestamp >= startOfDayTs);
+  
+  if (dailySnapshots.length < 2) {
+    // Недостаточно данных за день
+    return 'NEUTRAL';
+  }
+
+  const firstPrice = dailySnapshots[0]!.price;
+  const lastPrice = dailySnapshots[dailySnapshots.length - 1]!.price;
+  const priceChangePct = ((lastPrice - firstPrice) / firstPrice) * 100;
+
+  // Порог для определения тренда: 0.5% изменения за день
+  const threshold = 0.5;
+
+  if (priceChangePct > threshold) {
+    return 'BULLISH';
+  }
+
+  if (priceChangePct < -threshold) {
+    return 'BEARISH';
+  }
+
+  return 'NEUTRAL';
+}
+
+/**
  * Проверяет, разрешён ли вход в указанную сторону по глобальному тренду
  */
 export function isTradeAllowedByGlobalTrend(

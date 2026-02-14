@@ -13,6 +13,8 @@ import {
   writeCandlesCache,
 } from './candleLoader.js';
 import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
+import type { GlobalTrend } from '../market/analysis.js';
+import { detectDailyTrend } from '../market/analysis.js';
 
 type TradeSide = 'LONG' | 'SHORT';
 
@@ -186,6 +188,63 @@ async function runBacktest(
   const trades: ClosedTrade[] = [];
   const diagnostics: TradeDiagnostic[] = [];
 
+  // История цен для определения глобального тренда (нужно минимум 200 свечей)
+  const priceHistory: number[] = [];
+  // История свечей для определения дневного тренда (по дням)
+  const candlesByDay = new Map<string, HistoricalCandleInput[]>();
+
+  // Функция для определения глобального тренда на основе истории цен
+  const detectGlobalTrendFromPrices = (prices: number[]): GlobalTrend => {
+    if (prices.length < 200) return 'NEUTRAL';
+    
+    // Упрощенный расчет EMA50 и EMA200
+    const calculateEMA = (values: number[], period: number): number | null => {
+      if (values.length < period) return null;
+      const k = 2 / (period + 1);
+      let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+      for (let i = period; i < values.length; i++) {
+        ema = values[i]! * k + ema * (1 - k);
+      }
+      return ema;
+    };
+
+    const ema50 = calculateEMA(prices, 50);
+    const ema200 = calculateEMA(prices, 200);
+    
+    if (ema50 === null || ema200 === null) return 'NEUTRAL';
+    
+    const buffer = ema200 * 0.001; // 0.1% буфер
+    if (ema50 > ema200 + buffer) return 'BULLISH';
+    if (ema50 < ema200 - buffer) return 'BEARISH';
+    return 'NEUTRAL';
+  };
+
+  // Функция для определения дневного тренда на основе свечей за текущий день
+  const detectDailyTrendFromCandles = (currentCandle: HistoricalCandleInput): GlobalTrend => {
+    const candleDate = new Date(currentCandle.timestamp);
+    const dayKey = `${candleDate.getUTCFullYear()}-${String(candleDate.getUTCMonth() + 1).padStart(2, '0')}-${String(candleDate.getUTCDate()).padStart(2, '0')}`;
+    
+    // Добавляем текущую свечу в историю дня
+    if (!candlesByDay.has(dayKey)) {
+      candlesByDay.set(dayKey, []);
+    }
+    const dayCandles = candlesByDay.get(dayKey)!;
+    dayCandles.push(currentCandle);
+    
+    if (dayCandles.length < 2) return 'NEUTRAL';
+    
+    const firstPrice = dayCandles[0]!.close;
+    const lastPrice = dayCandles[dayCandles.length - 1]!.close;
+    const priceChangePct = ((lastPrice - firstPrice) / firstPrice) * 100;
+    
+    // Порог для определения тренда: 0.5% изменения за день
+    const threshold = 0.5;
+    
+    if (priceChangePct > threshold) return 'BULLISH';
+    if (priceChangePct < -threshold) return 'BEARISH';
+    return 'NEUTRAL';
+  };
+
   const commitClose = (trade: OpenTrade, closed: ClosedTrade) => {
     trades.push(closed);
     annotateExit(diagnostics, trade, closed);
@@ -195,6 +254,10 @@ async function runBacktest(
   };
 
   for (const candle of candles) {
+    // Добавляем цену закрытия в историю для определения тренда
+    priceHistory.push(candle.close);
+    // Держим только последние 200 свечей для экономии памяти
+    if (priceHistory.length > 200) priceHistory.shift();
     ingestHistoricalCandle(symbol, candle);
 
     const signalResult = adaptiveBollingerStrategy.getSignal(symbol);
@@ -239,7 +302,11 @@ async function runBacktest(
     // 3️⃣ Условия входа
     if (!openTrade && (signalResult.signal === 'LONG' || signalResult.signal === 'SHORT')) {
       const side: TradeSide = signalResult.signal;
-      const confirmed = adaptiveBollingerStrategy.confirmEntry(symbol, side);
+      // Определяем глобальный тренд для фильтрации входа
+      const globalTrend = detectGlobalTrendFromPrices(priceHistory);
+      // Определяем дневной тренд для дополнительной защиты
+      const dailyTrend = detectDailyTrendFromCandles(candle);
+      const confirmed = adaptiveBollingerStrategy.confirmEntry(symbol, side, globalTrend, dailyTrend);
       if (!confirmed) continue;
 
       const atr = getATR(symbol);

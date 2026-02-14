@@ -25,7 +25,7 @@ import {
 import { adaptiveBollingerStrategy } from './adaptiveBollingerStrategy.js';
 import { fetchBybitCandles } from '../backtest/candleLoader.js';
 import { ingest1hCandles } from './candleBuilder.js';
-import { calculateRSI, detectTrend, detectMarketPhase, detectGlobalTrend, type GlobalTrend } from './analysis.js';
+import { calculateRSI, detectTrend, detectMarketPhase, detectGlobalTrend, detectDailyTrend, type GlobalTrend } from './analysis.js';
 import { createFSM, fsmStep, shouldExitPosition } from './fsm.js';
 import type {
   IMPULSE_THRESHOLDS_CONFIG,
@@ -41,6 +41,12 @@ import { logEvent } from './logger.js';
 import { realTradeManager } from './realTradeManager.js';
 import type { TradeExecutor, TradeEntryMeta } from './tradeExecutor.js';
 import { tradingState } from '../core/tradingState.js';
+import {
+  addDailyPnlUsd,
+  isOverDailyLossLimit,
+  wasLimitAlertTriggeredToday,
+  markLimitAlertTriggered,
+} from '../core/dailyLossLimit.js';
 import { STRATEGY_CONFIG } from '../config/strategyConfig.js';
 import { createWatcherLogger } from './logging.js';
 import type { WatcherLogWriter } from './logging.js';
@@ -206,6 +212,8 @@ interface WatcherOptions {
   cvdProvider?: (symbol: string, minutes: number, referenceTs: number) => number;
   phaseLogger?: (event: PhaseLogEvent) => void;
   logWriter?: WatcherLogWriter;
+  /** Вызывается при достижении дневного лимита убытка (−10$). Бот отключает новые сделки; открытые позиции не закрываются. */
+  onDailyLossLimitReached?: () => void | Promise<void>;
 }
 
 // =====================
@@ -431,6 +439,12 @@ export async function startMarketWatcher(
       logData.globalTrend = globalTrend;
       log(`[GLOBAL_TREND] ${symbol}: ${globalTrend} (snaps: ${snaps.length})`);
 
+      // 🚨 DAILY TREND DETECTION (изменение цены с начала дня)
+      // Более чувствителен к краткосрочным движениям
+      const dailyTrend: GlobalTrend = detectDailyTrend(snaps);
+      logData.dailyTrend = dailyTrend;
+      log(`[DAILY_TREND] ${symbol}: ${dailyTrend} (snaps: ${snaps.length})`);
+
       const trendObj = {
         isBull: false,
         isBear: false,
@@ -616,7 +630,9 @@ export async function startMarketWatcher(
       if (habrMode) {
         confirmed = adaptiveBollingerStrategy.confirmEntry(
           symbol,
-          signal as 'LONG' | 'SHORT' | 'NONE'
+          signal as 'LONG' | 'SHORT' | 'NONE',
+          globalTrend, // Передаем глобальный тренд для фильтрации SHORT при BULLISH тренде
+          dailyTrend   // Передаем дневной тренд для дополнительной защиты от краткосрочных движений
         );
       } else if (signal === 'LONG' || signal === 'SHORT') {
         confirmed = confirmEntry({
@@ -667,23 +683,41 @@ export async function startMarketWatcher(
 
       // Позиция была закрыта на бирже (стоп/ликвидация) — шлём алерт и сбрасываем FSM
       if (closedExternallyPos && !hasOpen) {
+        const exitPrice = snap.price;
         const pnl =
           (
-            ((snap.price - closedExternallyPos.entryPrice) / closedExternallyPos.entryPrice) *
+            ((exitPrice - closedExternallyPos.entryPrice) / closedExternallyPos.entryPrice) *
             (closedExternallyPos.side === 'LONG' ? 100 : -100)
           ).toFixed(2);
+        const pnlUsd =
+          closedExternallyPos.side === 'LONG'
+            ? closedExternallyPos.qty * (exitPrice - closedExternallyPos.entryPrice)
+            : closedExternallyPos.qty * (closedExternallyPos.entryPrice - exitPrice);
+        addDailyPnlUsd(pnlUsd, now);
+        const durationMs = now - closedExternallyPos.entryTime;
+        const durationHours = (durationMs / (60 * 60 * 1000)).toFixed(1);
+        const entryTimeStr = dayjs(closedExternallyPos.entryTime).format('HH:mm:ss');
         log(
           `[TRADE] ⚪ EXIT (на бирже) ${closedExternallyPos.side} for ${symbol} | PnL: ${pnl}% | Причина: стоп/ликвидация на бирже`
         );
         try {
+          const stopLossInfo = Number.isFinite(closedExternallyPos.stopLoss)
+            ? `\nСтоп-лосс: ${closedExternallyPos.stopLoss.toFixed(4)}`
+            : '';
           const alertMsg =
             `⚪ *${symbol}: ПОЗИЦИЯ ЗАКРЫТА НА БИРЖЕ*\n` +
             `(стоп-лосс или ликвидация)\n` +
             `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
-            `Цена: ${snap.price}\n`;
+            `Вход: ${closedExternallyPos.entryPrice.toFixed(4)} (${entryTimeStr})\n` +
+            `Выход: ${exitPrice.toFixed(4)}\n` +
+            `Длительность: ${durationHours}ч${stopLossInfo}`;
           await Promise.resolve(onAlert(alertMsg));
         } catch (alertErr) {
           console.error(`❌ [${symbol}] Не удалось отправить алерт о закрытии на бирже:`, alertErr);
+        }
+        if (isOverDailyLossLimit() && !wasLimitAlertTriggeredToday() && options.onDailyLossLimitReached) {
+          markLimitAlertTriggered();
+          await Promise.resolve(options.onDailyLossLimitReached());
         }
         fsm.state = 'IDLE';
         fsm.side = null;
@@ -873,12 +907,21 @@ export async function startMarketWatcher(
           reason: effectiveExitReason,
         });
 
+        const exitPrice = snap.price;
         const pnl = pos
           ? (
-              ((snap.price - pos.entryPrice) / pos.entryPrice) *
+              ((exitPrice - pos.entryPrice) / pos.entryPrice) *
               (pos.side === 'LONG' ? 100 : -100)
             ).toFixed(2)
           : '0';
+
+        if (pos && Number.isFinite(pos.qty)) {
+          const pnlUsd =
+            pos.side === 'LONG'
+              ? pos.qty * (exitPrice - pos.entryPrice)
+              : pos.qty * (pos.entryPrice - exitPrice);
+          addDailyPnlUsd(pnlUsd, now);
+        }
 
         const entryTimeStr = pos?.entryTime
           ? dayjs(pos.entryTime).format('YYYY-MM-DD HH:mm:ss')
@@ -886,7 +929,7 @@ export async function startMarketWatcher(
         const closeTimeStr = dayjs(snap.timestamp).format('YYYY-MM-DD HH:mm:ss');
 
         log(
-          `[TRADE] ⚪ EXIT ${pos?.side ?? 'UNKNOWN'} for ${symbol} | PnL: ${pnl}% | Reason: ${effectiveExitReason} | Price: ${snap.price}` +
+          `[TRADE] ⚪ EXIT ${pos?.side ?? 'UNKNOWN'} for ${symbol} | PnL: ${pnl}% | Reason: ${effectiveExitReason} | Price: ${exitPrice}` +
             ` | Opened: ${entryTimeStr} | Closed: ${closeTimeStr}`
         );
 
@@ -895,10 +938,15 @@ export async function startMarketWatcher(
             `⚪ *${symbol}: ЗАКРЫТИЕ ПОЗИЦИИ*\n` +
             `Результат: *${pnl}%* ${Number(pnl) > 0 ? '✅' : '❌'}\n` +
             `Причина: *${effectiveExitReason}*\n` +
-            `Цена: ${snap.price}\n`;
+            `Цена: ${exitPrice}\n`;
           await Promise.resolve(onAlert(alertMsg));
         } catch (alertErr) {
           console.error(`❌ [${symbol}] Не удалось отправить алерт о закрытии:`, alertErr);
+        }
+
+        if (isOverDailyLossLimit() && !wasLimitAlertTriggeredToday() && options.onDailyLossLimitReached) {
+          markLimitAlertTriggered();
+          await Promise.resolve(options.onDailyLossLimitReached());
         }
       }
 

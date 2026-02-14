@@ -73,6 +73,7 @@ import { getClosedPnLStats, getMarketSnapshot, getTopLiquidSymbols } from '../se
 import { initializeMarketWatcher } from '../market/watcher.js';
 import { COINS_COUNT, LOG_PATH } from '../market/constants.market.js';
 import { tradingState } from '../core/tradingState.js';
+import { getDailyPnlUsd, getDailyLossLimitUsd } from '../core/dailyLossLimit.js';
 import { SYMBOL_HISTORY_FILES } from '../market/snapshotStore.js';
 
 const requiredEnvVars = ['BOT_TOKEN', 'BYBIT_API_KEY', 'BYBIT_SECRET_KEY'];
@@ -161,6 +162,7 @@ async function startWatchersOnce() {
       console.log('📉 Short-only: только SHORT');
     }
   }
+  const limitUsd = getDailyLossLimitUsd();
   stopWatchers = await initializeMarketWatcher(
     async msg => {
       if (subscribers.size === 0) {
@@ -177,7 +179,28 @@ async function startWatchersOnce() {
         }
       }
     },
-    { entryMode }
+    {
+      entryMode,
+      onDailyLossLimitReached: async () => {
+        tradingState.disable();
+        const dailyPnl = getDailyPnlUsd();
+        const alertMsg =
+          `🛑 *Бот выключен: достигнут лимит проигрыша (−${limitUsd}$ за день).*\n\n` +
+          `Дневной PnL: *${dailyPnl.toFixed(2)}$*\n\n` +
+          `Новые сделки не открываются. Открытые позиции *остаются* — будут закрыты по MEAN или стоп-лоссу как обычно.\n\n` +
+          `Включить снова: /start`;
+        if (subscribers.size > 0) {
+          for (const chatId of subscribers) {
+            try {
+              await bot.api.sendMessage(chatId, alertMsg, { parse_mode: 'Markdown' });
+            } catch (e) {
+              console.error('Daily loss limit alert failed:', chatId, e);
+            }
+          }
+        }
+        console.log('[TRADING] Disabled due to daily loss limit');
+      },
+    }
   );
 
   console.log('🚀 Market watchers started');

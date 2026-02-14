@@ -1,4 +1,4 @@
-import { calculateRSI } from './analysis.js';
+import { calculateRSI, type GlobalTrend } from './analysis.js';
 import {
   getATR,
   getCandle,
@@ -197,9 +197,11 @@ export class AdaptiveBollingerEmaStrategy {
    * Used after getSignal to avoid entering on stale data (e.g. price moved away from band).
    * @param symbol - e.g. "BTCUSDT"
    * @param signal - LONG or SHORT (NONE returns false)
+   * @param globalTrend - Optional global trend filter ('BULLISH' blocks SHORT, 'BEARISH' blocks LONG)
+   * @param dailyTrend - Optional daily trend filter (more sensitive to short-term movements)
    * @returns true if entry is still valid (band touch, distance, EMA bias, no bear cluster for LONG)
    */
-  confirmEntry(symbol: string, signal: AdaptiveSignal): boolean {
+  confirmEntry(symbol: string, signal: AdaptiveSignal, globalTrend?: GlobalTrend, dailyTrend?: GlobalTrend): boolean {
     if (signal === 'NONE') return false;
     const ctx = this.getContext(symbol);
     if (!ctx) return false;
@@ -208,6 +210,23 @@ export class AdaptiveBollingerEmaStrategy {
     const emaBias = this.getEmaBias(ctx);
     const bandWidthPct = ctx.middle > 0 ? (ctx.upper - ctx.lower) / ctx.middle : 0;
     if (bandWidthPct < MIN_BOLLINGER_WIDTH_PCT) return false;
+
+    // 🚨 GLOBAL TREND FILTER — блокируем торговлю против долгосрочного тренда
+    if (globalTrend === 'BULLISH' && signal === 'SHORT') {
+      return false; // Не входим в SHORT при бычьем тренде
+    }
+    if (globalTrend === 'BEARISH' && signal === 'LONG') {
+      return false; // Не входим в LONG при медвежьем тренде
+    }
+
+    // 🚨 DAILY TREND FILTER — блокируем торговлю против дневного тренда (более строгий фильтр)
+    // Если дневной тренд сильный, не входим против него даже если глобальный тренд нейтральный
+    if (dailyTrend === 'BULLISH' && signal === 'SHORT') {
+      return false; // Не входим в SHORT если весь день идет аптренд
+    }
+    if (dailyTrend === 'BEARISH' && signal === 'LONG') {
+      return false; // Не входим в LONG если весь день идет даунтренд
+    }
 
     if (signal === 'LONG') {
       return (
@@ -220,11 +239,13 @@ export class AdaptiveBollingerEmaStrategy {
     }
 
     if (signal === 'SHORT') {
+      // Ужесточаем проверку для SHORT: снижаем порог с 2% до 1% для защиты от сильного аптренда
+      const maxEmaDistanceForShortStrict = Math.min(MAX_EMA_DISTANCE_SHORT, 0.01); // 1% вместо 2%
       return (
         ctx.close >= ctx.upper * (1 - BAND_SLIPPAGE_TOLERANCE) &&
         distancePct >= MIN_BAND_DISTANCE * 0.8 &&
         emaBias >= EMA_TREND_TOLERANCE &&
-        emaBias <= MAX_EMA_DISTANCE_SHORT // не шорт в сильном аптренде
+        emaBias <= maxEmaDistanceForShortStrict // не шорт в сильном аптренде (более строгая проверка)
       );
     }
 
