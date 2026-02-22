@@ -805,9 +805,15 @@ export async function startMarketWatcher(
       // 2. ВХОД В ПОЗИЦИЮ (ENTER_MARKET)
       // Важно: проверяем экшен ENTER_MARKET из нашего нового FSM
       if (action === 'ENTER_MARKET' && !hasExposure) {
-        if (!tradingState.isEnabled()) {
-          log('[WATCHER] Trading disabled — skip ENTER_MARKET');
-          logData.entrySkipReason = 'TRADING_DISABLED';
+        if (!tradingState.allowNewEntries()) {
+          log(
+            tradingState.isCloseOnlyMode()
+              ? '[WATCHER] Close-only mode — skip ENTER_MARKET (текущие закрываются по стратегии)'
+              : '[WATCHER] Trading disabled — skip ENTER_MARKET'
+          );
+          logData.entrySkipReason = tradingState.isCloseOnlyMode()
+            ? 'CLOSE_ONLY_MODE'
+            : 'TRADING_DISABLED';
           logEvent(logData);
           return; // ← выход ТОЛЬКО из текущей итерации символа
         }

@@ -254,8 +254,12 @@ export class RealTradeManager implements TradeExecutor {
       console.log(`⚠️ [${symbol}] Уже выполняется открытие — пропуск`);
       return false;
     }
-    if (!tradingState.isEnabled()) {
-      console.warn('[EXECUTION] Trading disabled');
+    if (!tradingState.allowNewEntries()) {
+      console.warn(
+        tradingState.isCloseOnlyMode()
+          ? '[EXECUTION] Close-only mode — new positions disabled'
+          : '[EXECUTION] Trading disabled'
+      );
       return false;
     }
     this.openingLocks.add(symbol);

@@ -130,8 +130,9 @@ const mainKeyboard = new Keyboard()
   .text('/status')
   .text('/stats')
   .text('/stop')
-  .text('/download_logs')
+  .text('/close_only')
   .row()
+  .text('/download_logs')
   .text('/download_snapshots')
   .row()
   // .text('/openPosition')
@@ -376,11 +377,27 @@ bot.command('stop', async ctx => {
   );
 });
 
+bot.command('close_only', async ctx => {
+  tradingState.setCloseOnlyMode(true);
+  console.log(`📴 Close-only mode ON by chat ${ctx.chat.id}`);
+
+  await ctx.reply(
+    '📴 *Режим «только закрытие» включён*\n\n' +
+      '• Новые сделки *не открываются*\n' +
+      '• Текущие позиции продолжают закрываться по стратегии Болинжера (и по стопам)\n' +
+      '• Вотчеры работают как обычно\n\n' +
+      'Чтобы снова открывать сделки: /start',
+    { parse_mode: 'Markdown', reply_markup: mainKeyboard }
+  );
+});
+
 bot.command('status', ctx => {
+  const closeOnly = tradingState.isCloseOnlyMode();
   const status =
     `👥 Subscribers: ${subscribers.size}\n` +
     `📊 Watching ${COINS_COUNT} coins\n` +
-    `🔄 Updates every minute`;
+    `🔄 Updates every minute\n` +
+    (closeOnly ? `\n📴 Режим «только закрытие»: новые сделки не открываются` : '');
   ctx.reply(status).then();
 });
 
