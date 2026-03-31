@@ -529,7 +529,9 @@ async function fetchClosedPnLRecords(params: {
     } as any);
 
     if (resp.retCode !== 0) {
-      throw new Error(`getClosedPnL failed: retCode=${resp.retCode} retMsg=${resp.retMsg}`);
+      const err = new Error(`getClosedPnL failed: retCode=${resp.retCode} retMsg=${resp.retMsg}`);
+      (err as any).bybitRetCode = resp.retCode;
+      throw err;
     }
 
     const list = (resp as any)?.result?.list;

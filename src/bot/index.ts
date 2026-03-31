@@ -456,11 +456,12 @@ bot.command('stats', async ctx => {
     });
   } catch (e) {
     console.error(e);
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      loadingMsg.message_id,
-      '❌ Error fetching stats (check API keys / account permissions)'
-    );
+    const retCode = (e as any)?.bybitRetCode;
+    const errMsg =
+      retCode === 33004
+        ? '❌ API ключ ByBit истёк. Создайте новый ключ в настройках ByBit и обновите конфигурацию бота.'
+        : '❌ Ошибка получения статистики (проверьте API ключи / права доступа)';
+    await ctx.api.editMessageText(ctx.chat.id, loadingMsg.message_id, errMsg);
   }
 });
 
